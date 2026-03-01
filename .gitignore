@@ -49,6 +49,9 @@ data/*.xlsx
 !data/guidelines.csv.gz
 !data/guidelines.index
 
+# Learning docs (personal reference, not for public repo)
+docs/learning/
+
 # Logs
 logs/
 *.log
