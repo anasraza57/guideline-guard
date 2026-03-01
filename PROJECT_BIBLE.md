@@ -1,7 +1,7 @@
 # PROJECT BIBLE — GuidelineGuard
 
 > **Last Updated:** 2026-03-01
-> **Status:** Phase 1 COMPLETE — Next: Phase 2 (Extractor Agent)
+> **Status:** Phase 2 COMPLETE — Next: Phase 3 (Query Agent)
 
 ---
 
@@ -304,13 +304,15 @@ Instead, we'll build a `Pipeline` class that chains agent functions together wit
 - [x] Update PROJECT_BIBLE.md
 - **Note:** Actual data import (running against live DB) deferred to when Docker is started
 
-### Phase 2: Extractor Agent
-- [ ] Design SNOMED concept categorisation (without FHIR server dependency)
-- [ ] Build Extractor Agent that processes patient records
-- [ ] Categorise entries into: diagnosis, treatment, procedure, referral, investigation, other
-- [ ] Output structured extraction results
-- [ ] Write tests
-- [ ] Update learning docs + PROJECT_BIBLE.md
+### Phase 2: Extractor Agent ✅ COMPLETE
+- [x] Design SNOMED concept categorisation — two-tier: rule-based (84%) + LLM fallback (16%)
+- [x] Build SNOMED Categoriser service — `src/services/snomed_categoriser.py`
+- [x] Build Extractor Agent — `src/agents/extractor.py`
+- [x] Categorise entries into: diagnosis, treatment, procedure, referral, investigation, administrative, other
+- [x] Output structured ExtractionResult with episodes grouped by index_date
+- [x] Write tests — 82/82 passing (categoriser: 40 parametrised + 3, extractor: 9)
+- [x] Update learning docs — `05-extractor-agent-explained.md`
+- [x] Update PROJECT_BIBLE.md
 
 ### Phase 3: Query Agent
 - [ ] Design query generation prompts
@@ -392,6 +394,13 @@ Instead, we'll build a `Pipeline` class that chains agent functions together wit
 - ✅ Learning doc — `docs/learning/03-data-layer-explained.md` (2026-03-01)
 - ✅ Fixed torch version in requirements.txt (2.5.1 → 2.2.2 for Python 3.11 compat) (2026-03-01)
 
+### Phase 2: Extractor Agent ✅ COMPLETE
+- ✅ SNOMED Categoriser — rule-based keyword matching (84% coverage of 1,261 unique concepts) + LLM fallback (2026-03-01)
+- ✅ Extractor Agent — groups entries by index_date, categorises each, outputs structured ExtractionResult (2026-03-01)
+- ✅ Categories: diagnosis (463), referral (194), administrative (170), investigation (91), treatment (66), procedure (38) + 192 for LLM (2026-03-01)
+- ✅ Tests — 82/82 passing (2026-03-01)
+- ✅ Learning doc — `docs/learning/05-extractor-agent-explained.md` (2026-03-01)
+
 ---
 
 ## 6. Decisions Log
@@ -443,31 +452,26 @@ Instead, we'll build a `Pipeline` class that chains agent functions together wit
 
 **Date:** 2026-03-01
 **Phase 0:** COMPLETE
-**Phase 1:** COMPLETE
-**Phase 2:** NOT STARTED
+**Phase 1:** COMPLETE — Database, migrations, data import, vector store, 4327 patients + 1656 guidelines loaded
+**Phase 2:** COMPLETE — Extractor Agent with SNOMED categoriser
 
-**What was done in Phase 1:**
-- Async SQLAlchemy engine + session management (`src/models/database.py`)
-- 5 SQLAlchemy models: Patient, ClinicalEntry, AuditJob, AuditResult, Guideline
-- Alembic configured to use our Settings + model metadata
-- Initial migration `001_initial_schema.py` with all tables, indexes, foreign keys
-- Data import service: idempotent CSV→DB loader for patients and guidelines
-- FAISS vector store service: load/search/unload with singleton pattern
-- API endpoints: POST `/api/v1/data/import/patients` and `/api/v1/data/import/guidelines`
-- App startup auto-connects DB and loads FAISS (graceful fallback if unavailable)
-- 34 unit tests passing (up from 9 in Phase 0)
-- Learning doc: `docs/learning/03-data-layer-explained.md`
-- Fixed torch 2.5.1→2.2.2 for Python 3.11 compatibility
+**What was done in Phase 2:**
+- SNOMED Categoriser service: two-tier classification (rule-based 84% + LLM fallback 16%)
+- Extractor Agent: groups patient entries by index_date into episodes, categorises each entry
+- Data classes: CategorisedEntry, PatientEpisode, ExtractionResult with summary output
+- 82 unit tests passing (up from 34 in Phase 1)
+- Learning doc: `docs/learning/05-extractor-agent-explained.md`
+- DB port changed from 5432→5433 (avoids conflict with local PostgreSQL)
+- Data files committed to git (msk_valid_notes.csv, guidelines.csv.gz, guidelines.index)
 
-**Blockers:** None. Docker must be started to run actual DB migrations and data import.
+**Blockers:** None.
 
-**Next session should start with:** Phase 2 — Extractor Agent
-1. Design SNOMED concept categorisation (without FHIR server)
-2. Build Extractor Agent that processes patient clinical entries
-3. Categorise entries: diagnosis, treatment, procedure, referral, investigation, other
-4. Output structured extraction results
-5. Write tests
-6. Update learning docs + PROJECT_BIBLE.md
+**Next session should start with:** Phase 3 — Query Agent
+1. Design query generation prompts for guideline search
+2. Build Query Agent using AI provider abstraction
+3. Generate targeted search queries from extracted diagnoses
+4. Write tests
+5. Update learning docs + PROJECT_BIBLE.md
 
 ---
 
