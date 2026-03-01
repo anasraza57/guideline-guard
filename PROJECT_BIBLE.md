@@ -1,7 +1,7 @@
 # PROJECT BIBLE — GuidelineGuard
 
 > **Last Updated:** 2026-03-01
-> **Status:** Phase 2 COMPLETE — Next: Phase 3 (Query Agent)
+> **Status:** Phase 3 COMPLETE — Next: Phase 4 (Retriever Agent)
 
 ---
 
@@ -145,7 +145,7 @@ We are **not copying** their work. We are analysing it, taking what's good, fixi
 
 **What we're replacing:**
 - FHIR server dependency → rule-based regex categoriser + LLM fallback (84%/16% split, no external server)
-- Mistral-7B → OpenAI API (with provider abstraction)
+- Mistral-7B for query generation → three-tier approach: hand-crafted templates for common MSK conditions + LLM (via provider abstraction) for rare diagnoses + default fallback. Templates produce queries optimised for PubMedBERT similarity.
 - Hardcoded paths → environment variables and config
 - Raw LangGraph → our own clean pipeline orchestration
 
@@ -262,6 +262,7 @@ We are **not copying** their work. We are analysing it, taking what's good, fixi
 | **LLM Abstraction** | Custom provider pattern | Strategy pattern — swap providers via env var, zero code changes |
 | **Pipeline Orchestration** | Custom pipeline (not LangGraph) | LangGraph adds complexity without proportional benefit for a linear 4-step pipeline. Simple, testable functions are better. |
 | **Medical Coding** | Rule-based regex + LLM fallback | Two-tier SNOMED categoriser: regex patterns handle 84% of concepts, LLM classifies the remaining 16%. No FHIR server needed. |
+| **Query Generation** | Templates + LLM + defaults | Three-tier: hand-crafted templates for ~15 common MSK conditions, LLM for rare diagnoses, generic defaults as fallback. Templates optimised for PubMedBERT similarity. |
 | **Configuration** | Pydantic Settings | Type-safe, validates on startup, reads from .env files |
 | **Logging** | Python `logging` + `structlog` | Structured JSON logs, correlation IDs, proper levels |
 | **Containerisation** | Docker + Docker Compose | Reproducible environments, one-command setup |
@@ -321,12 +322,14 @@ Instead, we'll build a `Pipeline` class that chains agent functions together wit
 - [x] Update learning docs — `05-extractor-agent-explained.md`
 - [x] Update PROJECT_BIBLE.md
 
-### Phase 3: Query Agent
-- [ ] Design query generation prompts
-- [ ] Build Query Agent using LLM abstraction
-- [ ] Generate targeted guideline search queries from extracted concepts
-- [ ] Write tests
-- [ ] Update learning docs + PROJECT_BIBLE.md
+### Phase 3: Query Agent ✅ COMPLETE
+- [x] Design query generation — three-tier: template queries for common MSK diagnoses, LLM for unusual diagnoses, default fallback
+- [x] Build Query Agent — `src/agents/query.py` with template matching + LLM generation + defaults
+- [x] Hand-craft query templates for ~15 common MSK conditions optimised for PubMedBERT/FAISS retrieval
+- [x] Generate 1-3 targeted search queries per diagnosis
+- [x] Write tests — 117/117 passing (35 new Query Agent tests)
+- [x] Update learning docs — `06-query-agent-explained.md`
+- [x] Update PROJECT_BIBLE.md
 
 ### Phase 4: Retriever Agent
 - [ ] Build embedding pipeline (PubMedBERT)
@@ -408,6 +411,14 @@ Instead, we'll build a `Pipeline` class that chains agent functions together wit
 - ✅ Tests — 82/82 passing (2026-03-01)
 - ✅ Learning doc — `docs/learning/05-extractor-agent-explained.md` (2026-03-01)
 
+### Phase 3: Query Agent ✅ COMPLETE
+- ✅ Query Agent — three-tier query generation: templates for common MSK, LLM for rare, defaults as fallback (2026-03-01)
+- ✅ Template queries — hand-crafted for ~15 common MSK conditions (low back pain, osteoarthritis, carpal tunnel, gout, etc.) (2026-03-01)
+- ✅ LLM generation — prompt includes episode context (treatments, referrals, investigations) for targeted queries (2026-03-01)
+- ✅ Data classes — DiagnosisQueries, QueryResult with summary() and all_queries() helpers (2026-03-01)
+- ✅ Tests — 117/117 passing (35 new: template matching, default queries, agent with/without LLM, mock LLM, dataclasses) (2026-03-01)
+- ✅ Learning doc — `docs/learning/06-query-agent-explained.md` (2026-03-01)
+
 ---
 
 ## 6. Decisions Log
@@ -454,6 +465,14 @@ Instead, we'll build a `Pipeline` class that chains agent functions together wit
 - Pure LLM classification — unnecessary cost when most concepts have obvious keywords.
 **Reasoning:** The dataset has 1,261 unique concepts with human-readable display names. Regex patterns matching medical keywords and suffixes (-itis, -ectomy, -pathy, -osis) classify 1,069 concepts instantly and for free. The remaining 192 edge cases use the LLM. Each concept is classified once and cached. **Implemented:** `src/services/snomed_categoriser.py`.
 
+### Decision 006: Template-first query generation over pure LLM (2026-03-01)
+**Context:** Need to generate search queries from diagnoses for FAISS guideline retrieval.
+**Choice:** Three-tier approach: hand-crafted templates for common MSK diagnoses, LLM for rare diagnoses, default generic queries as fallback.
+**Alternatives rejected:**
+- Pure LLM generation (Hiruni's approach) — every diagnosis goes through LLM, even "Low back pain" where we know exactly what queries work best. Slower, costs money, and LLM doesn't know how our FAISS index is structured.
+- Pure template generation — wouldn't handle unusual diagnoses like "Acquired hallux valgus" or "Dupuytren's contracture".
+**Reasoning:** For common MSK conditions (~15 templates), we can write better queries than an LLM because we know how NICE guidelines are titled and structured. Templates are free, instant, deterministic, and can be empirically tuned against the FAISS index. For rare diagnoses, the LLM generates queries with episode context (treatments, referrals). Default queries ensure the pipeline never fails. **Implemented:** `src/agents/query.py`.
+
 ---
 
 ## 7. Current State Summary
@@ -462,22 +481,22 @@ Instead, we'll build a `Pipeline` class that chains agent functions together wit
 **Phase 0:** COMPLETE
 **Phase 1:** COMPLETE — Database, migrations, data import, vector store, 4327 patients + 1656 guidelines loaded
 **Phase 2:** COMPLETE — Extractor Agent with SNOMED categoriser
+**Phase 3:** COMPLETE — Query Agent with template-based + LLM query generation
 
-**What was done in Phase 2:**
-- SNOMED Categoriser service: two-tier classification (rule-based 84% + LLM fallback 16%)
-- Extractor Agent: groups patient entries by index_date into episodes, categorises each entry
-- Data classes: CategorisedEntry, PatientEpisode, ExtractionResult with summary output
-- 82 unit tests passing (up from 34 in Phase 1)
-- Learning doc: `docs/learning/05-extractor-agent-explained.md`
-- DB port changed from 5432→5433 (avoids conflict with local PostgreSQL)
-- Data files committed to git (msk_valid_notes.csv, guidelines.csv.gz, guidelines.index)
+**What was done in Phase 3:**
+- Query Agent: takes ExtractionResult, generates 1-3 search queries per diagnosis for FAISS retrieval
+- Three-tier approach: hand-crafted templates (~15 MSK conditions) → LLM generation (with episode context) → default generic queries
+- Templates are optimised for PubMedBERT similarity (use NICE guideline language)
+- Data classes: DiagnosisQueries (per-diagnosis queries with source tracking), QueryResult (patient-level output with summary)
+- 117 unit tests passing (up from 82 in Phase 2, +35 new)
+- Learning doc: `docs/learning/06-query-agent-explained.md`
 
 **Blockers:** None.
 
-**Next session should start with:** Phase 3 — Query Agent
-1. Design query generation prompts for guideline search
-2. Build Query Agent using AI provider abstraction
-3. Generate targeted search queries from extracted diagnoses
+**Next session should start with:** Phase 4 — Retriever Agent
+1. Build PubMedBERT embedding pipeline for query text → vectors
+2. Build Retriever Agent that uses FAISS to find relevant guidelines
+3. Implement result ranking and filtering
 4. Write tests
 5. Update learning docs + PROJECT_BIBLE.md
 
