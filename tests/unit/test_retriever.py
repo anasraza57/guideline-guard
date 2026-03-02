@@ -297,6 +297,46 @@ class TestRetrieverAgent:
         assert summary["total_diagnoses"] == 1
         assert "titles" in summary["diagnoses"][0]
 
+    def test_duplicate_diagnosis_encodes_once(self, mock_embedder, mock_vector_store):
+        """Same diagnosis term in 2 entries should only encode once."""
+        qr = QueryResult(
+            pat_id="pat-dedup",
+            diagnosis_queries=[
+                DiagnosisQueries(
+                    diagnosis_term="Finger pain",
+                    concept_id="1",
+                    index_date="2024-01-15",
+                    queries=["finger pain guidelines"],
+                    source="llm",
+                ),
+                DiagnosisQueries(
+                    diagnosis_term="Finger pain",
+                    concept_id="1",
+                    index_date="2024-06-01",
+                    queries=["finger pain guidelines"],
+                    source="llm",
+                ),
+            ],
+            total_diagnoses=2,
+            total_queries=2,
+        )
+
+        agent = RetrieverAgent(
+            embedder=mock_embedder,
+            vector_store=mock_vector_store,
+        )
+        result = agent.retrieve(qr)
+
+        # 2 DiagnosisGuidelines produced (one per entry)
+        assert result.total_diagnoses == 2
+        # But encode_batch called only once (cached for second occurrence)
+        assert mock_embedder.encode_batch.call_count == 1
+        # Both should have the same guidelines
+        assert (
+            result.diagnosis_guidelines[0].guidelines
+            is result.diagnosis_guidelines[1].guidelines
+        )
+
 
 # ── Data class tests ──────────────────────────────────────────────────
 

@@ -122,6 +122,26 @@ Database
 API Response
 ```
 
+### Diagnosis Deduplication
+
+A single patient may have the same diagnosis appearing multiple times — e.g., "Finger pain" recorded 4 times across 2 episodes. Without dedup, this triggers 4 identical LLM query calls, 4 identical PubMedBERT encodings, 4 identical FAISS searches, and 4 identical scorer LLM calls.
+
+Each pipeline stage caches results to avoid redundant work:
+
+| Stage | Cache Key | What's Saved |
+|-------|-----------|-------------|
+| **Query Agent** | `diagnosis_term` | Generated queries (template or LLM) |
+| **Retriever** | `diagnosis_term` | Embeddings + FAISS search results |
+| **Scorer** | `(diagnosis_term, index_date)` | LLM adherence score |
+
+The Query Agent and Retriever cache by diagnosis term alone — the same diagnosis always produces the same queries and the same guideline matches regardless of which episode it appears in. The Scorer uses `(term, date)` because different episodes may have different treatments/referrals, which could affect the adherence score.
+
+For our example patient with 4x "Finger pain" + 2x "Finger fracture":
+- **Before:** 4 LLM query calls, 6 encode+search, 6 scorer LLM calls = **10 LLM calls**
+- **After:** 1 LLM query call, 2 encode+search, 2 scorer LLM calls = **3 LLM calls**
+
+At batch scale (4,327 patients), this can save thousands of LLM calls.
+
 ### Early Exit Points
 
 The pipeline can stop early at several points:

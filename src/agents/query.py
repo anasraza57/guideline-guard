@@ -262,13 +262,36 @@ class QueryAgent:
         """
         all_diagnosis_queries: list[DiagnosisQueries] = []
 
+        # Cache queries by diagnosis term — same term always produces identical
+        # queries regardless of which episode it appears in.
+        query_cache: dict[str, list[str]] = {}
+        source_cache: dict[str, str] = {}
+
         for episode in extraction.episodes:
             for diagnosis in episode.diagnoses:
-                dq = await self._generate_for_diagnosis(
-                    diagnosis=diagnosis,
-                    episode_context=self._build_context(episode),
-                    index_date=str(episode.index_date),
-                )
+                term = diagnosis.term
+
+                if term in query_cache:
+                    logger.debug(
+                        "Reusing cached queries for %r (index_date=%s)",
+                        term, episode.index_date,
+                    )
+                    dq = DiagnosisQueries(
+                        diagnosis_term=term,
+                        concept_id=diagnosis.concept_id,
+                        index_date=str(episode.index_date),
+                        queries=query_cache[term],
+                        source=source_cache[term],
+                    )
+                else:
+                    dq = await self._generate_for_diagnosis(
+                        diagnosis=diagnosis,
+                        episode_context=self._build_context(episode),
+                        index_date=str(episode.index_date),
+                    )
+                    query_cache[term] = dq.queries
+                    source_cache[term] = dq.source
+
                 all_diagnosis_queries.append(dq)
 
         total_queries = sum(len(dq.queries) for dq in all_diagnosis_queries)

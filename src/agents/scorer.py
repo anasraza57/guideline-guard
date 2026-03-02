@@ -247,16 +247,31 @@ class ScorerAgent:
         non_adherent = 0
         errors = 0
 
-        for dg in retrieval.diagnosis_guidelines:
-            episode = episode_map.get(dg.index_date)
+        # Cache scores by (diagnosis_term, index_date) — same diagnosis in the
+        # same episode has identical context (treatments, referrals), so the
+        # score will be the same.  Different episodes are still scored separately.
+        score_cache: dict[tuple[str, str], DiagnosisScore] = {}
 
-            ds = await self._score_diagnosis(
-                diagnosis_term=dg.diagnosis_term,
-                concept_id=dg.concept_id,
-                index_date=dg.index_date,
-                episode=episode,
-                guidelines=dg,
-            )
+        for dg in retrieval.diagnosis_guidelines:
+            cache_key = (dg.diagnosis_term, dg.index_date)
+
+            if cache_key in score_cache:
+                logger.debug(
+                    "Reusing cached score for %r (index_date=%s)",
+                    dg.diagnosis_term, dg.index_date,
+                )
+                ds = score_cache[cache_key]
+            else:
+                episode = episode_map.get(dg.index_date)
+                ds = await self._score_diagnosis(
+                    diagnosis_term=dg.diagnosis_term,
+                    concept_id=dg.concept_id,
+                    index_date=dg.index_date,
+                    episode=episode,
+                    guidelines=dg,
+                )
+                score_cache[cache_key] = ds
+
             all_scores.append(ds)
 
             if ds.error:

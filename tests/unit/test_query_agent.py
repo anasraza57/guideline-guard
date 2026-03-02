@@ -396,6 +396,59 @@ class TestQueryAgentWithLLM:
         dq = result.diagnosis_queries[0]
         assert len(dq.queries) <= 3  # max_queries_per_diagnosis default is 3
 
+    @pytest.mark.asyncio
+    async def test_duplicate_diagnosis_across_episodes_calls_llm_once(self):
+        """Same diagnosis term in 2 episodes should only call LLM once."""
+        extraction = ExtractionResult(
+            pat_id="pat-dedup",
+            episodes=[
+                PatientEpisode(
+                    index_date=date(2024, 1, 15),
+                    entries=[
+                        CategorisedEntry(
+                            concept_id="999999",
+                            term="Acquired hallux valgus",
+                            concept_display="Acquired hallux valgus",
+                            cons_date=date(2024, 1, 15),
+                            category="diagnosis",
+                        ),
+                    ],
+                ),
+                PatientEpisode(
+                    index_date=date(2024, 6, 1),
+                    entries=[
+                        CategorisedEntry(
+                            concept_id="999999",
+                            term="Acquired hallux valgus",
+                            concept_display="Acquired hallux valgus",
+                            cons_date=date(2024, 6, 1),
+                            category="diagnosis",
+                        ),
+                    ],
+                ),
+            ],
+            total_entries=2,
+            total_diagnoses=2,
+        )
+
+        mock_provider = AsyncMock()
+        mock_provider.chat_simple.return_value = (
+            "hallux valgus guidelines\nbunion management\nhallux referral"
+        )
+
+        agent = QueryAgent(ai_provider=mock_provider)
+        result = await agent.generate_queries(extraction)
+
+        # 2 DiagnosisQueries produced (one per episode)
+        assert result.total_diagnoses == 2
+        # But LLM called only once (cached for second occurrence)
+        assert mock_provider.chat_simple.call_count == 1
+        # Both should have identical queries
+        assert result.diagnosis_queries[0].queries == result.diagnosis_queries[1].queries
+        # But different index_dates
+        assert result.diagnosis_queries[0].index_date == "2024-01-15"
+        assert result.diagnosis_queries[1].index_date == "2024-06-01"
+
 
 # ── DiagnosisQueries / QueryResult dataclass tests ────────────────────
 

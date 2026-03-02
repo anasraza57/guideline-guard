@@ -401,6 +401,7 @@ Instead, we'll build a `Pipeline` class that chains agent functions together wit
 - ✅ Improved Swagger docs — response_model, summary, Field descriptions on all endpoints (2026-03-02)
 - ✅ Added `GET /api/v1/data/stats`, `?limit=N` for batch, `GET /audit/jobs/{job_id}/results` pagination (2026-03-02)
 - ✅ Learning docs updated: `05-extractor-agent-explained.md`, `09-pipeline-integration-explained.md` (2026-03-02)
+- ✅ Diagnosis deduplication across pipeline — Query Agent caches queries by diagnosis term (1 LLM call per unique term instead of per occurrence), Retriever caches embeddings+FAISS results by term, Scorer caches scores by (term, index_date). Eliminates redundant LLM/encoding work for duplicate diagnoses across episodes. 219 tests passing (+3 new dedup tests) (2026-03-02)
 
 ### Phase 7b: Gold-Standard Validation
 - [ ] Import gold-standard audit data (120 cases)
@@ -744,6 +745,9 @@ Reports (read path):
 - `src/services/vector_store.py` — `np.ascontiguousarray()` before FAISS search, auto-decompress `.csv.gz`
 - `src/services/snomed_categoriser.py` — removed 'other' from categories, updated LLM prompts, added 10 new rule patterns
 - `src/agents/extractor.py` — fallback default changed from 'other' to 'administrative'
+- `src/agents/query.py` — per-patient query cache by diagnosis term (avoids duplicate LLM calls)
+- `src/agents/retriever.py` — per-patient retrieval cache by diagnosis term (avoids duplicate encoding + FAISS)
+- `src/agents/scorer.py` — per-patient score cache by (diagnosis_term, index_date) (avoids duplicate scorer LLM calls)
 
 **Blockers:** None.
 

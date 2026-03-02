@@ -121,8 +121,26 @@ class RetrieverAgent:
         """
         all_dg: list[DiagnosisGuidelines] = []
 
+        # Cache retrieval results by diagnosis term — same term has identical
+        # queries, embeddings, and FAISS results regardless of episode.
+        retrieval_cache: dict[str, list[GuidelineMatch]] = {}
+
         for dq in query_result.diagnosis_queries:
-            dg = self._retrieve_for_diagnosis(dq)
+            if dq.diagnosis_term in retrieval_cache:
+                logger.debug(
+                    "Reusing cached retrieval for %r (index_date=%s)",
+                    dq.diagnosis_term, dq.index_date,
+                )
+                dg = DiagnosisGuidelines(
+                    diagnosis_term=dq.diagnosis_term,
+                    concept_id=dq.concept_id,
+                    index_date=dq.index_date,
+                    guidelines=retrieval_cache[dq.diagnosis_term],
+                )
+            else:
+                dg = self._retrieve_for_diagnosis(dq)
+                retrieval_cache[dq.diagnosis_term] = dg.guidelines
+
             all_dg.append(dg)
 
         total_guidelines = sum(len(dg.guidelines) for dg in all_dg)

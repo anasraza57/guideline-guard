@@ -637,6 +637,64 @@ class TestScorerAgent:
         assert ds.index_date == "2024-01-15"
         assert ds.explanation != ""
 
+    @pytest.mark.asyncio
+    async def test_duplicate_diagnosis_same_episode_scores_once(
+        self, mock_ai_provider, sample_extraction
+    ):
+        """Same (diagnosis_term, index_date) should only call LLM once."""
+        # Retrieval with duplicate diagnosis in the same episode
+        retrieval = RetrievalResult(
+            pat_id="pat-001",
+            diagnosis_guidelines=[
+                DiagnosisGuidelines(
+                    diagnosis_term="Low back pain",
+                    concept_id="279039007",
+                    index_date="2024-01-15",
+                    guidelines=[
+                        GuidelineMatch(
+                            guideline_id="ng59-1",
+                            title="Low back pain guideline",
+                            source="nice",
+                            url="",
+                            clean_text="Exercise therapy recommended.",
+                            score=0.1,
+                            rank=1,
+                            matched_query="q",
+                        ),
+                    ],
+                ),
+                DiagnosisGuidelines(
+                    diagnosis_term="Low back pain",
+                    concept_id="279039007",
+                    index_date="2024-01-15",
+                    guidelines=[
+                        GuidelineMatch(
+                            guideline_id="ng59-1",
+                            title="Low back pain guideline",
+                            source="nice",
+                            url="",
+                            clean_text="Exercise therapy recommended.",
+                            score=0.1,
+                            rank=1,
+                            matched_query="q",
+                        ),
+                    ],
+                ),
+            ],
+            total_diagnoses=2,
+            total_guidelines=2,
+        )
+
+        agent = ScorerAgent(ai_provider=mock_ai_provider)
+        result = await agent.score(sample_extraction, retrieval)
+
+        # 2 scores produced (both entries counted)
+        assert result.total_diagnoses == 2
+        # But LLM called only once (cached for duplicate)
+        assert mock_ai_provider.chat_simple.call_count == 1
+        # Both scores should be the same object
+        assert result.diagnosis_scores[0] is result.diagnosis_scores[1]
+
 
 # ── _format_guidelines tests ─────────────────────────────────────────
 
