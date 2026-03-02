@@ -16,6 +16,7 @@ from src.utils.logging import setup_logging
 from src.api.routes.health import router as health_router
 from src.api.routes.data import router as data_router
 from src.api.routes.audit import router as audit_router
+from src.api.routes.reports import router as reports_router
 
 
 @asynccontextmanager
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(data_router, prefix="/api/v1")
     app.include_router(audit_router, prefix="/api/v1")
+    app.include_router(reports_router, prefix="/api/v1")
 
     return app
 

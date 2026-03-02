@@ -1,7 +1,7 @@
 # PROJECT BIBLE — GuidelineGuard
 
 > **Last Updated:** 2026-03-02
-> **Status:** Phase 6 COMPLETE — Next: Phase 7 (Validation & Reporting)
+> **Status:** Phase 7a COMPLETE (Reporting Endpoints) — Next: Phase 7b (Gold-Standard Validation)
 
 ---
 
@@ -273,7 +273,7 @@ We are **not copying** their work. We are analysing it, taking what's good, fixi
 | **Configuration** | Pydantic Settings | Type-safe, validates on startup, reads from .env files |
 | **Logging** | Python `logging` + `structlog` | Structured JSON logs, correlation IDs, proper levels |
 | **Containerisation** | Docker + Docker Compose | Reproducible environments, one-command setup |
-| **Testing** | pytest + pytest-asyncio | Standard Python testing, async support |
+| **Testing** | pytest + pytest-asyncio + aiosqlite | Standard Python testing, async support, in-memory SQLite for query tests |
 | **Task Runner** | Makefile | Simple, universal, documents common commands |
 
 ### Why NOT LangGraph?
@@ -370,12 +370,20 @@ Instead, we'll build a `Pipeline` class that chains agent functions together wit
 - [x] Update learning docs — `09-pipeline-integration-explained.md`
 - [x] Update PROJECT_BIBLE.md
 
-### Phase 7: Validation & Reporting
+### Phase 7a: Reporting Endpoints ✅ COMPLETE
+- [x] Build reporting service — `src/services/reporting.py` (dashboard stats, condition breakdown, non-adherent cases, score distribution)
+- [x] Build report API endpoints — `src/api/routes/reports.py` (4 GET endpoints under `/api/v1/reports/`)
+- [x] Register reports router in `src/main.py`
+- [x] Write tests — 216/216 passing (26 new reporting tests using in-memory SQLite via aiosqlite)
+- [x] Update learning docs — `docs/learning/10-reporting-explained.md`
+- [x] Update PROJECT_BIBLE.md
+
+### Phase 7b: Gold-Standard Validation
 - [ ] Import gold-standard audit data (120 cases)
 - [ ] Run system against gold-standard cases
 - [ ] Compare AI scores vs human auditor scores
-- [ ] Generate accuracy/agreement metrics
-- [ ] Build reporting endpoints (per-patient, aggregate, by-condition)
+- [ ] Generate accuracy/agreement metrics (Cohen's kappa, etc.)
+- [ ] Add `get_validation_metrics()` to reporting service + new endpoint
 - [ ] Write tests
 - [ ] Update learning docs + PROJECT_BIBLE.md
 
@@ -466,6 +474,19 @@ Instead, we'll build a `Pipeline` class that chains agent functions together wit
 - ✅ Tests — 190/190 passing (14 new: 5 PipelineResult + 9 AuditPipeline) (2026-03-02)
 - ✅ Learning doc — `docs/learning/09-pipeline-integration-explained.md` (2026-03-02)
 
+### Phase 7a: Reporting Endpoints ✅ COMPLETE
+- ✅ Reporting service — `src/services/reporting.py` with 4 public functions + 1 private helper (2026-03-02)
+- ✅ `get_dashboard_stats()` — total audited/failed, mean/median/min/max adherence score, failure rate (SQL columns only) (2026-03-02)
+- ✅ `get_condition_breakdown()` — adherence rates grouped by diagnosis term, min_count filter, sort by count or adherence_rate (2026-03-02)
+- ✅ `get_non_adherent_cases()` — paginated list of score=-1 diagnoses with explanations for clinical review (2026-03-02)
+- ✅ `get_score_distribution()` — histogram of patient-level overall_score, configurable bins (2026-03-02)
+- ✅ `_load_completed_results()` — shared query helper, optional Patient eager-loading via selectinload (2026-03-02)
+- ✅ Report API — `src/api/routes/reports.py` with 4 GET endpoints, Pydantic response schemas (2026-03-02)
+- ✅ Router registered in `src/main.py` — `app.include_router(reports_router, prefix="/api/v1")` (2026-03-02)
+- ✅ Added `aiosqlite==0.20.0` to requirements.txt for async SQLite testing (2026-03-02)
+- ✅ Tests — 216/216 passing (26 new: 4 _load_completed_results + 6 dashboard + 5 condition breakdown + 6 non-adherent + 5 score distribution) (2026-03-02)
+- ✅ Learning doc — `docs/learning/10-reporting-explained.md` (2026-03-02)
+
 ---
 
 ## 6. Decisions Log
@@ -552,6 +573,22 @@ Instead, we'll build a `Pipeline` class that chains agent functions together wit
 - WebSocket streaming — more complex, no need for real-time updates (polling is fine).
 **Reasoning:** `BackgroundTasks` is built into FastAPI, requires no external broker, and integrates with our async pipeline. The client creates a job, gets back a job ID, and polls for progress. The background task commits progress every 10 patients and handles its own error recovery. **Implemented:** `src/api/routes/audit.py`.
 
+### Decision 011: Separate reporting route file and service layer (2026-03-02)
+**Context:** Need reporting/analytics endpoints for reviewing audit results. Could add to existing `audit.py` routes or create separate files.
+**Choice:** Separate `src/services/reporting.py` (computation) + `src/api/routes/reports.py` (thin route layer).
+**Alternatives rejected:**
+- Adding to `audit.py` — audit routes handle pipeline execution (write path); reporting is read-only analytics (read path). Mixing them would grow `audit.py` and conflate concerns.
+- No service layer — putting SQL queries in route handlers. Would make functions untestable without HTTP client, harder to extend for gold-standard metrics later.
+**Reasoning:** Separation of concerns: reporting service is independently testable, extensible (add `get_validation_metrics()` later), and keeps routes thin. The `_load_completed_results()` helper avoids query duplication between functions that need details_json parsing. Python-side aggregation is appropriate because ~4,327 patients is trivially small in memory and `details_json` is TEXT not JSONB.
+
+### Decision 012: aiosqlite for reporting tests (2026-03-02)
+**Context:** Reporting functions execute real SQL queries (aggregations, filters). Need to test actual query logic.
+**Choice:** In-memory SQLite via `aiosqlite` for test fixtures.
+**Alternatives rejected:**
+- Mocking `session.execute()` — fragile, requires mock objects for Result/Row types, breaks when query order changes. `get_dashboard_stats()` makes 4 separate execute calls, each needing different mock return types.
+- Requiring PostgreSQL for tests — adds infrastructure dependency, slows tests, unnecessary for unit-level validation.
+**Reasoning:** In-memory SQLite tests real SQL queries without external dependencies. Tables are created from the same SQLAlchemy models (via `Base.metadata.create_all`), ensuring schema stays in sync. Tests run in <1 second and are robust against implementation refactors.
+
 ---
 
 ## 7. Current State Summary
@@ -564,37 +601,48 @@ Instead, we'll build a `Pipeline` class that chains agent functions together wit
 **Phase 4:** COMPLETE — Retriever Agent with PubMedBERT embeddings + FAISS search
 **Phase 5:** COMPLETE — Scorer Agent with LLM-based guideline adherence scoring
 **Phase 6:** COMPLETE — Pipeline Integration with REST API
+**Phase 7a:** COMPLETE — Reporting Endpoints (4 analytics endpoints + service layer)
 
-**What was done in Phase 6:**
-- Pipeline orchestrator: `src/services/pipeline.py` chains all 4 agents (Extractor → Query → Retriever → Scorer)
-- Loads patient data from DB, runs full pipeline, stores results as AuditResult rows
-- Audit API: 4 REST endpoints for single patient, batch, job status, and result retrieval
-- Batch processing: uses FastAPI BackgroundTasks with its own DB session, commits every 10 patients
-- Error handling: per-patient error capture, early exits (no entries, no diagnoses), continues on failure
-- SNOMED category pre-loading: loads all 1,261 unique concepts once, caches across all patients
-- Results stored with summary counts + full JSON breakdown in details_json column
-- 190 unit tests passing (up from 176 in Phase 5, +14 new pipeline tests)
-- Learning doc: `docs/learning/09-pipeline-integration-explained.md`
+**What was done in Phase 7a:**
+- Reporting service: `src/services/reporting.py` with 4 public analytics functions + 1 shared query helper
+- Dashboard stats: total audited/failed, mean/median/min/max adherence score, failure rate (SQL aggregation)
+- Condition breakdown: per-diagnosis adherence rates from details_json, with min_count filter and sort options
+- Non-adherent cases: paginated list of score=-1 diagnoses with explanations for clinical review
+- Score distribution: histogram of patient-level overall_score with configurable bins
+- Report API: `src/api/routes/reports.py` with 4 GET endpoints + Pydantic response schemas
+- All endpoints accept optional `?job_id=N` to scope to a specific batch run
+- Added `aiosqlite==0.20.0` for async in-memory SQLite testing
+- 216 unit tests passing (up from 190 in Phase 6, +26 new reporting tests)
+- Learning doc: `docs/learning/10-reporting-explained.md`
 
-**The system is now end-to-end operational.** From API request to scored audit result:
+**The system now has both pipeline execution and reporting analytics.** Available endpoints:
 ```
-POST /api/v1/audit/patient/{pat_id}
-  → Load from DB → Extract → Query → Retrieve → Score → Store → Return
+Audit (write path):
+  POST /api/v1/audit/patient/{pat_id}   — Single patient audit
+  POST /api/v1/audit/batch              — Batch audit (background)
+  GET  /api/v1/audit/jobs/{job_id}      — Job progress
+  GET  /api/v1/audit/results/{pat_id}   — Patient results
+
+Reports (read path):
+  GET  /api/v1/reports/dashboard         — Summary stats
+  GET  /api/v1/reports/conditions        — Per-condition breakdown
+  GET  /api/v1/reports/non-adherent      — Non-adherent cases
+  GET  /api/v1/reports/score-distribution — Score histogram
 ```
 
 **Key files:**
-- Pipeline: `src/services/pipeline.py`
-- API: `src/api/routes/audit.py`
-- Tests: `tests/unit/test_pipeline.py`
+- Reporting service: `src/services/reporting.py`
+- Report API: `src/api/routes/reports.py`
+- Tests: `tests/unit/test_reporting.py`
 
 **Blockers:** None.
 
-**Next session should start with:** Phase 7 — Validation & Reporting
+**Next session should start with:** Phase 7b — Gold-Standard Validation
 1. Import gold-standard audit data (120 cases manually scored by clinicians)
 2. Run our pipeline against those 120 patients
 3. Compare AI scores vs human auditor scores
 4. Generate accuracy/agreement metrics (Cohen's kappa, etc.)
-5. Build reporting endpoints (per-patient, aggregate, by-condition)
+5. Add `get_validation_metrics()` to reporting service + new endpoint
 6. Write tests
 7. Update learning docs + PROJECT_BIBLE.md
 
