@@ -363,7 +363,7 @@ Instead, we'll build a `Pipeline` class that chains agent functions together wit
 - [x] Implement single-patient audit endpoint — `POST /api/v1/audit/patient/{pat_id}`
 - [x] Implement batch audit endpoint — `POST /api/v1/audit/batch` (background processing)
 - [x] Implement job tracking — `GET /api/v1/audit/jobs/{job_id}` (progress polling)
-- [x] Implement result retrieval — `GET /api/v1/audit/results/{pat_id}`
+- [x] Implement result retrieval — `GET /api/v1/audit/jobs/{job_id}/results` (paginated) and `GET /api/v1/audit/results/{pat_id}` (per-patient)
 - [x] Error handling — per-patient error capture, early exits, continues on failure
 - [x] SNOMED category pre-loading — load once, cache across all patients
 - [x] Write tests — 190/190 passing (14 new pipeline tests)
@@ -466,7 +466,7 @@ Instead, we'll build a `Pipeline` class that chains agent functions together wit
 - ✅ Single patient audit — `POST /api/v1/audit/patient/{pat_id}` runs pipeline synchronously, returns scoring result (2026-03-02)
 - ✅ Batch audit — `POST /api/v1/audit/batch` runs in background with FastAPI BackgroundTasks, tracks via AuditJob (2026-03-02)
 - ✅ Job tracking — `GET /api/v1/audit/jobs/{job_id}` returns progress (processed/total/failed) (2026-03-02)
-- ✅ Result retrieval — `GET /api/v1/audit/results/{pat_id}` returns all audit results with JSON details (2026-03-02)
+- ✅ Result retrieval — `GET /api/v1/audit/jobs/{job_id}/results` (paginated batch results) and `GET /api/v1/audit/results/{pat_id}` (per-patient results) (2026-03-02)
 - ✅ Error handling — per-patient error capture, early exits for missing data/no diagnoses, continues on failure (2026-03-02)
 - ✅ SNOMED category pre-loading — `load_categories_from_db()` loads all unique concepts once, caches across patients (2026-03-02)
 - ✅ Results stored in AuditResult table — overall_score, counts, full JSON breakdown in details_json (2026-03-02)
@@ -617,17 +617,27 @@ Instead, we'll build a `Pipeline` class that chains agent functions together wit
 
 **The system now has both pipeline execution and reporting analytics.** Available endpoints:
 ```
+Health:
+  GET  /health                                — Liveness check
+  GET  /health/ready                          — Readiness check
+
+Data:
+  GET  /api/v1/data/stats                     — Database row counts
+  POST /api/v1/data/import/patients           — Import patient CSV
+  POST /api/v1/data/import/guidelines         — Import guidelines CSV
+
 Audit (write path):
-  POST /api/v1/audit/patient/{pat_id}   — Single patient audit
-  POST /api/v1/audit/batch              — Batch audit (background)
-  GET  /api/v1/audit/jobs/{job_id}      — Job progress
-  GET  /api/v1/audit/results/{pat_id}   — Patient results
+  POST /api/v1/audit/patient/{pat_id}         — Single patient audit
+  POST /api/v1/audit/batch                    — Batch audit (background, supports ?limit=N)
+  GET  /api/v1/audit/jobs/{job_id}            — Job progress
+  GET  /api/v1/audit/jobs/{job_id}/results    — Paginated job results
+  GET  /api/v1/audit/results/{pat_id}         — All results for a patient
 
 Reports (read path):
-  GET  /api/v1/reports/dashboard         — Summary stats
-  GET  /api/v1/reports/conditions        — Per-condition breakdown
-  GET  /api/v1/reports/non-adherent      — Non-adherent cases
-  GET  /api/v1/reports/score-distribution — Score histogram
+  GET  /api/v1/reports/dashboard              — Summary stats
+  GET  /api/v1/reports/conditions             — Per-condition breakdown
+  GET  /api/v1/reports/non-adherent           — Non-adherent cases
+  GET  /api/v1/reports/score-distribution     — Score histogram
 ```
 
 **Key files:**
@@ -640,6 +650,10 @@ Reports (read path):
 - Fixed `Makefile` `run` target — added `DB_HOST=localhost` so `make run` works locally without manual env override.
 - Updated `README.md` — professional getting-started guide with all 9 API endpoints, pipeline diagram, usage examples (audit + reports), correct test count (216), correct project structure.
 - Added `scripts/build_index.py` — builds the FAISS guideline index from `guidelines.csv` using PubMedBERT. Previously we relied on Cyprian's pre-built index file; now the system can rebuild it from scratch. Encodes all 1,656 guideline texts in batches, L2-normalizes, and saves as `IndexFlatL2`.
+- Improved Swagger API docs — added `response_model`, `summary`, `Field(description=...)`, and expanded docstrings to all endpoints. Swagger UI now shows full response schemas and parameter descriptions.
+- Added `GET /api/v1/data/stats` endpoint — returns row counts for patients, clinical_entries, guidelines tables.
+- Added `?limit=N` to batch endpoint — `POST /api/v1/audit/batch?limit=50` audits a subset of patients.
+- Added `GET /api/v1/audit/jobs/{job_id}/results` with pagination — view all results from a batch run. Kept the original `GET /api/v1/audit/results/{pat_id}` for looking up a specific patient's results across all jobs.
 
 **Blockers:** None.
 

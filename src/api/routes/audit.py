@@ -8,11 +8,10 @@ and retrieving results.
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from pydantic import BaseModel
-from sqlalchemy import select
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.audit import AuditJob, AuditResult
@@ -21,24 +20,61 @@ from src.models.patient import Patient
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/audit", tags=["audit"])
+router = APIRouter(prefix="/audit", tags=["Audit"])
 
 
-# ── Request / response schemas ───────────────────────────────────────
+# ── Response schemas ─────────────────────────────────────────────────
 
 
-class AuditSingleRequest(BaseModel):
-    """Request to audit a single patient."""
+class DiagnosisScoreSchema(BaseModel):
+    diagnosis: str
+    score: int = Field(description="+1 (adherent) or -1 (non-adherent)")
+    explanation: str
+    guidelines_followed: list[str]
+    guidelines_not_followed: list[str]
+
+
+class ScoringResultSchema(BaseModel):
+    overall_score: float = Field(description="Proportion of adherent diagnoses (0.0–1.0)")
+    total_diagnoses: int
+    adherent_count: int
+    non_adherent_count: int
+    error_count: int
+    scores: list[DiagnosisScoreSchema]
+
+
+class AuditSingleSuccessResponse(BaseModel):
+    status: str = "completed"
     pat_id: str
+    result: ScoringResultSchema
 
 
-class BatchAuditRequest(BaseModel):
-    """Request to audit multiple patients."""
-    pat_ids: list[str] | None = None  # None = audit all patients
+class AuditSingleFailedResponse(BaseModel):
+    status: str = "failed"
+    pat_id: str
+    error: str | None
+    stage_reached: str | None
 
 
-class AuditResultResponse(BaseModel):
-    """Audit result for a single patient."""
+class BatchAcceptedResponse(BaseModel):
+    status: str = "accepted"
+    job_id: int
+    total_patients: int
+    message: str
+
+
+class JobStatusResponse(BaseModel):
+    job_id: int
+    status: str = Field(description="pending | running | completed | failed")
+    total_patients: int
+    processed_patients: int
+    failed_patients: int
+    started_at: str | None = None
+    completed_at: str | None = None
+    error_message: str | None = None
+
+
+class AuditResultItem(BaseModel):
     pat_id: str
     overall_score: float | None
     diagnoses_found: int
@@ -49,16 +85,13 @@ class AuditResultResponse(BaseModel):
     details: dict | None = None
 
 
-class JobStatusResponse(BaseModel):
-    """Status of a batch audit job."""
+class JobResultsResponse(BaseModel):
     job_id: int
-    status: str
-    total_patients: int
-    processed_patients: int
-    failed_patients: int
-    started_at: str | None = None
-    completed_at: str | None = None
-    error_message: str | None = None
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    results: list[AuditResultItem]
 
 
 # ── Helper: build pipeline ───────────────────────────────────────────
@@ -90,15 +123,30 @@ def _get_pipeline():
 # ── Endpoints ────────────────────────────────────────────────────────
 
 
-@router.post("/patient/{pat_id}")
+@router.post(
+    "/patient/{pat_id}",
+    summary="Audit a single patient",
+    responses={
+        200: {"description": "Audit completed or failed with details"},
+        404: {"description": "Patient not found"},
+    },
+)
 async def audit_single_patient(
     pat_id: str,
     session: AsyncSession = Depends(get_session),
 ):
     """
-    Run the full audit pipeline for a single patient.
+    Run the full 4-agent audit pipeline for a single patient.
 
-    Returns the scoring result immediately (synchronous).
+    The pipeline runs synchronously and returns the result immediately:
+
+    1. **Extractor** — groups clinical entries by episode, categorises each
+    2. **Query** — generates search queries for each diagnosis
+    3. **Retriever** — finds relevant NICE guidelines via FAISS + PubMedBERT
+    4. **Scorer** — LLM evaluates adherence per diagnosis
+
+    Returns an overall adherence score (0.0–1.0) and per-diagnosis
+    breakdown with explanations.
     """
     # Verify patient exists
     result = await session.execute(
@@ -136,43 +184,63 @@ async def audit_single_patient(
         }
 
 
-@router.post("/batch")
+@router.post(
+    "/batch",
+    response_model=BatchAcceptedResponse,
+    summary="Start a batch audit",
+    responses={
+        404: {"description": "One or more patients not found"},
+        400: {"description": "No patients to audit"},
+    },
+)
 async def start_batch_audit(
-    request: BatchAuditRequest,
     background_tasks: BackgroundTasks,
+    limit: int | None = Query(None, ge=1, description="Maximum number of patients to audit (default: all)"),
+    pat_ids: list[str] | None = Query(None, description="Specific patient IDs to audit (default: all)"),
     session: AsyncSession = Depends(get_session),
 ):
     """
     Start a batch audit job for multiple patients.
 
-    The job runs in the background. Returns the job ID immediately
-    for polling via GET /audit/jobs/{job_id}.
+    The job runs in the background. Returns a job ID immediately for
+    polling progress via `GET /audit/jobs/{job_id}`.
+
+    **Options:**
+    - Omit both parameters to audit all patients in the database
+    - Use `limit` to audit a random subset (e.g. `?limit=50`)
+    - Use `pat_ids` to audit specific patients
+
+    Each patient is processed through the full 4-agent pipeline.
+    Progress is committed every 10 patients.
     """
     # Resolve patient IDs
-    if request.pat_ids is not None:
-        pat_ids = request.pat_ids
+    if pat_ids is not None:
+        ids = pat_ids
         # Verify all patients exist
         result = await session.execute(
-            select(Patient.pat_id).where(Patient.pat_id.in_(pat_ids))
+            select(Patient.pat_id).where(Patient.pat_id.in_(ids))
         )
         found = {row[0] for row in result.all()}
-        missing = set(pat_ids) - found
+        missing = set(ids) - found
         if missing:
             raise HTTPException(
                 status_code=404,
                 detail=f"Patients not found: {sorted(missing)[:10]}",
             )
     else:
-        result = await session.execute(select(Patient.pat_id))
-        pat_ids = [row[0] for row in result.all()]
+        query = select(Patient.pat_id)
+        if limit is not None:
+            query = query.limit(limit)
+        result = await session.execute(query)
+        ids = [row[0] for row in result.all()]
 
-    if not pat_ids:
+    if not ids:
         raise HTTPException(status_code=400, detail="No patients to audit")
 
     # Create job record
     job = AuditJob(
         status="pending",
-        total_patients=len(pat_ids),
+        total_patients=len(ids),
         processed_patients=0,
         failed_patients=0,
     )
@@ -181,12 +249,12 @@ async def start_batch_audit(
     job_id = job.id
 
     # Schedule background processing
-    background_tasks.add_task(_run_batch_background, job_id, pat_ids)
+    background_tasks.add_task(_run_batch_background, job_id, ids)
 
     return {
         "status": "accepted",
         "job_id": job_id,
-        "total_patients": len(pat_ids),
+        "total_patients": len(ids),
         "message": f"Batch audit started. Poll GET /api/v1/audit/jobs/{job_id} for status.",
     }
 
@@ -258,12 +326,22 @@ async def _run_batch_background(job_id: int, pat_ids: list[str]) -> None:
                 pass
 
 
-@router.get("/jobs/{job_id}")
+@router.get(
+    "/jobs/{job_id}",
+    response_model=JobStatusResponse,
+    summary="Check batch job status",
+    responses={404: {"description": "Job not found"}},
+)
 async def get_job_status(
     job_id: int,
     session: AsyncSession = Depends(get_session),
 ):
-    """Get the status of a batch audit job."""
+    """
+    Get the current status and progress of a batch audit job.
+
+    Poll this endpoint to track progress. The job transitions through
+    states: `pending` → `running` → `completed` (or `failed`).
+    """
     result = await session.execute(
         select(AuditJob).where(AuditJob.id == job_id)
     )
@@ -284,12 +362,106 @@ async def get_job_status(
     )
 
 
-@router.get("/results/{pat_id}")
+@router.get(
+    "/jobs/{job_id}/results",
+    response_model=JobResultsResponse,
+    summary="Get batch job results",
+    responses={404: {"description": "Job not found"}},
+)
+async def get_job_results(
+    job_id: int,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Results per page"),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Get paginated audit results for a specific batch job.
+
+    Each result includes the patient's overall adherence score,
+    diagnosis counts, and the full scoring breakdown in `details`.
+    """
+    # Verify job exists
+    result = await session.execute(
+        select(AuditJob).where(AuditJob.id == job_id)
+    )
+    job = result.scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    # Count total results
+    total = await session.scalar(
+        select(func.count())
+        .select_from(AuditResult)
+        .where(AuditResult.job_id == job_id)
+    )
+    total = total or 0
+    total_pages = max(1, (total + page_size - 1) // page_size)
+
+    # Fetch paginated results with patient info
+    offset = (page - 1) * page_size
+    result = await session.execute(
+        select(AuditResult, Patient.pat_id)
+        .join(Patient, AuditResult.patient_id == Patient.id)
+        .where(AuditResult.job_id == job_id)
+        .order_by(AuditResult.id)
+        .offset(offset)
+        .limit(page_size)
+    )
+    rows = result.all()
+
+    items = []
+    for ar, pat_id in rows:
+        details = None
+        if ar.details_json:
+            try:
+                details = json.loads(ar.details_json)
+            except json.JSONDecodeError:
+                details = None
+
+        items.append(AuditResultItem(
+            pat_id=pat_id,
+            overall_score=ar.overall_score,
+            diagnoses_found=ar.diagnoses_found,
+            guidelines_followed=ar.guidelines_followed,
+            guidelines_not_followed=ar.guidelines_not_followed,
+            status=ar.status,
+            error_message=ar.error_message,
+            details=details,
+        ))
+
+    return JobResultsResponse(
+        job_id=job_id,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+        results=items,
+    )
+
+
+class PatientResultsResponse(BaseModel):
+    pat_id: str
+    total_results: int
+    results: list[AuditResultItem]
+
+
+@router.get(
+    "/results/{pat_id}",
+    response_model=PatientResultsResponse,
+    summary="Get all results for a patient",
+    responses={404: {"description": "Patient not found"}},
+)
 async def get_patient_results(
     pat_id: str,
     session: AsyncSession = Depends(get_session),
 ):
-    """Get all audit results for a patient."""
+    """
+    Get all audit results for a specific patient across all jobs.
+
+    A patient may have been audited multiple times (different batch runs).
+    Returns all results ordered by most recent first, each with the full
+    scoring breakdown.
+    """
     # Find patient
     result = await session.execute(
         select(Patient).where(Patient.pat_id == pat_id)
@@ -299,7 +471,7 @@ async def get_patient_results(
     if patient is None:
         raise HTTPException(status_code=404, detail=f"Patient {pat_id} not found")
 
-    # Get results
+    # Get all results for this patient
     result = await session.execute(
         select(AuditResult)
         .where(AuditResult.patient_id == patient.id)
@@ -307,10 +479,7 @@ async def get_patient_results(
     )
     audit_results = result.scalars().all()
 
-    if not audit_results:
-        return {"pat_id": pat_id, "results": [], "message": "No audit results found"}
-
-    responses = []
+    items = []
     for ar in audit_results:
         details = None
         if ar.details_json:
@@ -319,17 +488,19 @@ async def get_patient_results(
             except json.JSONDecodeError:
                 details = None
 
-        responses.append(
-            AuditResultResponse(
-                pat_id=pat_id,
-                overall_score=ar.overall_score,
-                diagnoses_found=ar.diagnoses_found,
-                guidelines_followed=ar.guidelines_followed,
-                guidelines_not_followed=ar.guidelines_not_followed,
-                status=ar.status,
-                error_message=ar.error_message,
-                details=details,
-            )
-        )
+        items.append(AuditResultItem(
+            pat_id=pat_id,
+            overall_score=ar.overall_score,
+            diagnoses_found=ar.diagnoses_found,
+            guidelines_followed=ar.guidelines_followed,
+            guidelines_not_followed=ar.guidelines_not_followed,
+            status=ar.status,
+            error_message=ar.error_message,
+            details=details,
+        ))
 
-    return {"pat_id": pat_id, "results": [r.model_dump() for r in responses]}
+    return PatientResultsResponse(
+        pat_id=pat_id,
+        total_results=len(items),
+        results=items,
+    )

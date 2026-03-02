@@ -93,6 +93,8 @@ Once running, all endpoints are documented interactively at **http://localhost:8
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/v1/data/stats` | Database row counts (patients, entries, guidelines) |
+| POST | `/api/v1/data/import/patients` | Import patient records from CSV |
+| POST | `/api/v1/data/import/guidelines` | Import guidelines from CSV |
 
 ### Audit (Pipeline Execution)
 | Method | Endpoint | Description |
@@ -101,6 +103,7 @@ Once running, all endpoints are documented interactively at **http://localhost:8
 | POST | `/api/v1/audit/batch` | Start a batch audit (all or subset of patients) |
 | GET | `/api/v1/audit/jobs/{job_id}` | Check batch job status and progress |
 | GET | `/api/v1/audit/jobs/{job_id}/results` | Get paginated results for a batch job |
+| GET | `/api/v1/audit/results/{pat_id}` | Get all audit results for a specific patient |
 
 ### Reports (Analytics)
 | Method | Endpoint | Description |
