@@ -253,6 +253,32 @@ This was a critical fix — the original implementation made 322 individual LLM 
 | `/api/v1/audit/jobs/{job_id}/results` | GET | Get paginated results for a batch job |
 | `/api/v1/audit/results/{pat_id}` | GET | Get all results for a specific patient |
 
+### Service Loading on Request
+
+Both the single-patient and batch endpoints verify that critical services are loaded before processing. After uvicorn's `--reload` restarts the server, singletons may not be populated yet:
+
+```python
+# In both audit_single_patient and _run_batch_background:
+if not pipeline._retriever._embedder.is_loaded:
+    pipeline._retriever._embedder.load()
+if not pipeline._retriever._vector_store.is_loaded:
+    pipeline._retriever._vector_store.load()
+```
+
+The vector store also auto-decompresses `guidelines.csv.gz` if the uncompressed CSV is missing:
+
+```python
+# In vector_store.load():
+if not csv_path.exists():
+    gz_path = Path(str(csv_path) + ".gz")
+    if gz_path.exists():
+        # Decompresses once, then CSV exists for future loads
+        with gzip.open(gz_path, "rb") as f_in, open(csv_path, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+```
+
+This means the repo only stores the compressed `.gz` file, and the system self-bootstraps on first run.
+
 ### Single Patient Audit
 
 ```

@@ -392,6 +392,11 @@ Instead, we'll build a `Pipeline` class that chains agent functions together wit
 - ✅ Embedder tensor cleanup — `.detach()` before `.numpy()`, explicit `del outputs, inputs` after encoding, `np.ascontiguousarray()` output for FAISS compatibility (2026-03-02)
 - ✅ Retriever batch encoding — switched from individual `encode()` per query to `encode_batch()` per diagnosis. 6 forward passes instead of 18 for a 6-diagnosis patient (2026-03-02)
 - ✅ FAISS contiguous array enforcement — `np.ascontiguousarray()` in vector store search to prevent memory alignment crashes (2026-03-02)
+- ✅ Eliminated 'other' SNOMED category — removed from valid set, LLM prompts now force 6 real categories, all fallbacks default to 'administrative', added 10 new rule patterns, fixed 12 miscategorised entries in DB (2026-03-02)
+- ✅ Fixed PubMedBERT segfault — `TOKENIZERS_PARALLELISM=false` disables HuggingFace Rust threads that conflict with uvicorn async event loop on macOS; `OMP_NUM_THREADS=1` prevents PyTorch internal threading conflicts (2026-03-02)
+- ✅ Added `faulthandler.enable()` — prints Python traceback on segfaults instead of silent crashes (2026-03-02)
+- ✅ Vector store load check in endpoints — both single and batch audit endpoints now verify embedder AND vector store are loaded before processing (2026-03-02)
+- ✅ Auto-decompress `guidelines.csv.gz` — vector store auto-decompresses the .gz file on first load if uncompressed CSV is missing; only runs once (2026-03-02)
 - ✅ Added `scripts/build_index.py` — rebuilds FAISS index from guidelines.csv (2026-03-02)
 - ✅ Improved Swagger docs — response_model, summary, Field descriptions on all endpoints (2026-03-02)
 - ✅ Added `GET /api/v1/data/stats`, `?limit=N` for batch, `GET /audit/jobs/{job_id}/results` pagination (2026-03-02)
@@ -733,10 +738,12 @@ Reports (read path):
 - `src/services/pipeline.py` — category persistence (load from DB → classify new → write back)
 - `src/ai/openai_provider.py` — client timeout (60s) + max_retries (2)
 - `src/config/settings.py` — `openai_request_timeout`, `pipeline_patient_timeout`
-- `src/main.py` — `_recover_stale_jobs()`, PubMedBERT pre-loading
+- `src/main.py` — `_recover_stale_jobs()`, PubMedBERT pre-loading, `faulthandler`, `TOKENIZERS_PARALLELISM=false`, `OMP_NUM_THREADS=1`
 - `src/services/embedder.py` — `.detach()` tensor cleanup, `np.ascontiguousarray()` output
-- `src/agents/retriever.py` — `encode_batch()` per diagnosis instead of individual `encode()` per query
-- `src/services/vector_store.py` — `np.ascontiguousarray()` before FAISS search
+- `src/agents/retriever.py` — `encode_batch()` per diagnosis instead of individual `encode()` per query, diagnostic logging
+- `src/services/vector_store.py` — `np.ascontiguousarray()` before FAISS search, auto-decompress `.csv.gz`
+- `src/services/snomed_categoriser.py` — removed 'other' from categories, updated LLM prompts, added 10 new rule patterns
+- `src/agents/extractor.py` — fallback default changed from 'other' to 'administrative'
 
 **Blockers:** None.
 
@@ -755,8 +762,9 @@ Reports (read path):
 
 - **Local PostgreSQL port conflict:** Host machine has a native PostgreSQL on port 5432, so our Docker DB uses port 5433. When running Alembic or scripts locally, must set `DB_HOST=localhost DB_PORT=5433`.
 - **torch version pinned to 2.2.2:** Python 3.11 doesn't support torch 2.5.1. Will need updating if Python is upgraded.
-- **SNOMED categoriser coverage at 84%:** 192 of 1,261 concepts require LLM fallback (now batched, 7 calls total). Coverage could be improved by adding more patterns, but diminishing returns — LLM handles the rest. Categories are persisted to DB after first classification.
+- **SNOMED categoriser coverage at 84%:** 192 of 1,261 concepts require LLM fallback (now batched, 7 calls total). Coverage could be improved by adding more patterns, but diminishing returns — LLM handles the rest. Categories are persisted to DB after first classification. 'other' category has been eliminated — all concepts must map to one of 6 categories (diagnosis, treatment, procedure, referral, investigation, administrative).
 - **faiss.normalize_L2 segfault on macOS:** `faiss.normalize_L2()` crashes when called on numpy arrays from PyTorch tensors. Worked around by using numpy normalization instead. May not affect Linux/Docker.
+- **HuggingFace tokenizers parallelism segfault on macOS:** HuggingFace tokenizers use Rust-based (rayon) parallelism internally, which creates threads that conflict with uvicorn's async event loop and Python thread pools, causing segfaults. Fixed by setting `TOKENIZERS_PARALLELISM=false` and `OMP_NUM_THREADS=1` before any imports in `src/main.py`. May not affect Linux/Docker.
 - **PyTorch tensor → numpy memory lifecycle:** Calling `.numpy()` on a tensor without `.detach()` can cause segfaults when the tensor is garbage-collected while numpy still references it. Fixed by adding `.detach()` before `.numpy()`, explicitly `del`eting intermediate tensors, and returning `np.ascontiguousarray()` from the embedder. FAISS search also uses `np.ascontiguousarray()` to guarantee memory alignment.
 - **PubMedBERT requires ~2GB RAM:** The embedding model (~440MB on disk) needs significant memory. Loaded at startup via lifespan handler so it's ready before any HTTP request arrives.
 - **Embedder tests use bert-tiny model:** Real PubMedBERT (~440MB) too large for unit tests. Tests use `prajjwal1/bert-tiny` (17MB, 128-dim) — same encoding logic, different weights. Integration tests with real model needed.

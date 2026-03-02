@@ -224,6 +224,21 @@ The vector store also enforces contiguous arrays before FAISS search:
 query = np.ascontiguousarray(query_embedding, dtype=np.float32)
 ```
 
+## HuggingFace Tokenizers Parallelism Segfault
+
+During development, the server kept crashing with a segmentation fault during PubMedBERT encoding. Adding `faulthandler.enable()` revealed the crash happened inside `concurrent/futures/thread.py` — a threading conflict.
+
+**Root cause:** HuggingFace tokenizers use **Rust-based parallelism** (rayon) internally for tokenization. These Rust threads conflict with uvicorn's async event loop and Python thread pools on macOS, causing segfaults.
+
+**Fix (in `src/main.py`, before any imports):**
+```python
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Disable Rust parallelism
+os.environ["OMP_NUM_THREADS"] = "1"              # Limit PyTorch/OpenMP threads
+```
+
+This forces single-threaded tokenization, which is still fast enough for our query sizes (1-3 short sentences per diagnosis). The fix may not be needed on Linux/Docker where threading behaviour differs.
+
 ## Configuration
 
 | Setting | Default | Description |

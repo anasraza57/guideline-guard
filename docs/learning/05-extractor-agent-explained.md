@@ -33,13 +33,14 @@ Each clinical concept is classified into one of these categories:
 | **investigation** | A test or scan | X-ray of knee, Blood test |
 | **procedure** | A surgical or clinical procedure | Knee replacement, Arthroscopy |
 | **administrative** | Admin actions, reviews, certificates | Med3 certificate, Medication review |
-| **other** | Anything else | — |
+
+> **Note:** There are exactly 6 categories — no "other" bucket. Every concept must map to one of these six. If the LLM or rules can't find a clear match, the fallback is "administrative" rather than an ambiguous "other" category. This was a deliberate design decision to ensure every concept gets a meaningful classification.
 
 #### Two-Tier Classification
 
 1. **Rule-based (84% of concepts)**: Keyword pattern matching on the concept display text. Fast, free, and deterministic. For example, if the text contains "pain" or "fracture", it's a diagnosis. If it contains "referral", it's a referral.
 
-2. **LLM fallback (16% of concepts)**: For concepts that don't match any rule, we ask the LLM to classify them. This handles edge cases like "Bandy legged" or "Acquired hallux valgus".
+2. **LLM fallback (16% of concepts)**: For concepts that don't match any rule, we ask the LLM to classify them. The LLM prompt explicitly lists only the 6 valid categories and forbids returning anything else. This handles edge cases like "Bandy legged" or "Acquired hallux valgus".
 
 Since there are only ~1,261 unique concepts in the entire dataset, we classify each one **once** and cache the result. Categories are also **persisted to the database** (the `category` column in `clinical_entries`), so after the first run, subsequent runs load categories from DB with zero LLM calls.
 

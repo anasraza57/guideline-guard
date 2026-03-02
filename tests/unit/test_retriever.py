@@ -143,8 +143,8 @@ class TestRetrieverAgent:
         )
         agent.retrieve(single_query_result)
 
-        # 3 queries for the single diagnosis
-        assert mock_embedder.encode.call_count == 3
+        # encode_batch is called once per diagnosis (batches all queries together)
+        assert mock_embedder.encode_batch.call_count == 1
 
     def test_retrieve_searches_for_each_query(
         self, mock_embedder, mock_vector_store, single_query_result
