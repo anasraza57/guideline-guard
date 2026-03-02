@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -27,6 +27,7 @@ from src.ai.base import AIProvider
 from src.models.audit import AuditJob, AuditResult
 from src.models.patient import ClinicalEntry, Patient
 from src.services.embedder import Embedder
+from src.services.snomed_categoriser import categorise_concepts
 from src.services.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -118,12 +119,57 @@ class AuditPipeline:
         logger.info("Pipeline categories loaded (%d concepts)", self._extractor.cache_size)
 
     async def load_categories_from_db(self, session: AsyncSession) -> None:
-        """Load all unique concept_display values from the database."""
-        result = await session.execute(
-            select(ClinicalEntry.concept_display).distinct()
+        """
+        Load categories from DB, only classify uncategorized concepts.
+
+        Already-categorized concepts are loaded directly from the database.
+        New categories are computed (rules + LLM) and persisted back so
+        they survive server restarts — no wasted LLM calls on re-runs.
+        """
+        # 1. Load concepts that already have a category saved
+        cached_result = await session.execute(
+            select(ClinicalEntry.concept_display, ClinicalEntry.category)
+            .where(ClinicalEntry.category.is_not(None))
+            .distinct()
         )
-        displays = [row[0] for row in result.all()]
-        await self.load_categories(displays)
+        cached = {row[0]: row[1] for row in cached_result.all()}
+
+        # 2. Find concepts that still need classification
+        uncached_result = await session.execute(
+            select(ClinicalEntry.concept_display)
+            .where(ClinicalEntry.category.is_(None))
+            .distinct()
+        )
+        uncached = [row[0] for row in uncached_result.all() if row[0] not in cached]
+
+        logger.info(
+            "Category loading: %d cached in DB, %d need classification",
+            len(cached), len(uncached),
+        )
+
+        # 3. Classify only the new ones (rules first, LLM for the rest)
+        if uncached:
+            new_categories = await categorise_concepts(
+                uncached, ai_provider=self._extractor._ai_provider,
+            )
+
+            # 4. Persist new categories back to the DB
+            for concept_display, category in new_categories.items():
+                await session.execute(
+                    update(ClinicalEntry)
+                    .where(ClinicalEntry.concept_display == concept_display)
+                    .where(ClinicalEntry.category.is_(None))
+                    .values(category=category)
+                )
+            await session.commit()
+            logger.info("Saved %d new categories to database", len(new_categories))
+
+            cached.update(new_categories)
+
+        # 5. Load everything into the extractor's in-memory cache
+        self._extractor.set_category_cache(cached)
+        self._categories_loaded = True
+        logger.info("Pipeline categories ready (%d concepts)", len(cached))
 
     # ── Single patient ───────────────────────────────────────────
 

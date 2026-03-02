@@ -126,6 +126,10 @@ class ExtractorAgent:
         logger.info("Loaded %d concept categories into cache", len(self._category_cache))
         return self._category_cache
 
+    def set_category_cache(self, mapping: dict[str, str]) -> None:
+        """Replace the category cache with pre-loaded data."""
+        self._category_cache = mapping
+
     def get_category(self, concept_display: str) -> str:
         """Look up a concept's category from the cache."""
         return self._category_cache.get(concept_display, "other")
