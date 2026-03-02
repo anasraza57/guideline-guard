@@ -2,7 +2,7 @@
 SNOMED concept categoriser.
 
 Classifies clinical concepts into categories (diagnosis, treatment,
-procedure, referral, investigation, other) using a two-tier approach:
+procedure, referral, investigation, administrative) using a two-tier approach:
 1. Rule-based keyword matching for clear-cut cases
 2. LLM fallback for ambiguous terms
 
@@ -23,7 +23,6 @@ CATEGORIES = {
     "referral",
     "investigation",
     "administrative",
-    "other",
 }
 
 # ── Rule-based patterns ──────────────────────────────────────────────
@@ -223,10 +222,24 @@ _p(r"\bcare\s+plan\b", "administrative")
 _p(r"\bfollow[- ]?up\b", "administrative")
 _p(r"\bmanagement\b", "administrative")
 _p(r"\baction\s+plan\b", "administrative")
-_p(r"\bunfit\s+for\s+work\b", "administrative")
+_p(r"\bunfit\b", "administrative")
 _p(r"\bfit\s+note\b", "administrative")
 _p(r"\bplanning\b", "administrative")
 _p(r"\bagreeing\b", "administrative")
+_p(r"\bidentifying\b", "administrative")
+_p(r"\bdiscussion\b", "administrative")
+
+# -- Treatments (lifestyle, recommendations, prevention)
+_p(r"\brecommendation\b", "treatment")
+_p(r"\bdiet\b", "treatment")
+_p(r"\bprevention\b", "treatment")
+_p(r"\bprotection\s+against\b", "treatment")
+_p(r"\bprophyla", "treatment")
+
+# -- Diagnoses (symptoms, complaints)
+_p(r"\bcomplaining\b", "diagnosis")
+_p(r"\bsymptom\b", "diagnosis")
+_p(r"\bstress\b", "diagnosis")
 
 # -- Investigations (additional)
 _p(r"\bblood\s+pressure\b", "investigation")
@@ -247,13 +260,14 @@ def categorise_by_rules(concept_display: str) -> str | None:
 
 LLM_SINGLE_CATEGORISE_PROMPT = """You are a clinical coding expert. Categorise the following SNOMED CT clinical concept into exactly one of these categories:
 
-- diagnosis: A condition, symptom, disease, or injury (e.g., "Low back pain", "Fracture of femur")
-- treatment: A medication, therapy, or therapeutic intervention (e.g., "Ibuprofen", "Physiotherapy")
+- diagnosis: A condition, symptom, disease, complaint, or injury (e.g., "Low back pain", "Fracture of femur", "Stress at work")
+- treatment: A medication, therapy, lifestyle advice, diet, recommendation, or preventive intervention (e.g., "Ibuprofen", "Physiotherapy", "Vegetarian diet", "Recommendation to rest")
 - procedure: A surgical or clinical procedure (e.g., "Knee replacement", "Arthroscopy")
 - referral: A referral to another service or specialist (e.g., "Referral to orthopaedics")
 - investigation: A test, scan, or diagnostic investigation (e.g., "X-ray of knee", "Blood test")
-- administrative: Administrative actions, consultations, certificates, reviews (e.g., "Med3 certificate", "Telephone consultation")
-- other: Anything that does not fit the above categories
+- administrative: Administrative actions, consultations, certificates, reviews, goal-setting, discussions, fitness-for-work assessments (e.g., "Med3 certificate", "Telephone consultation", "Identifying goals", "Discussion about resuscitation")
+
+You MUST pick one of the six categories above. Do NOT respond with "other" or any value outside this list. If unsure, pick the closest match.
 
 Respond with ONLY the category name, nothing else.
 
@@ -262,13 +276,14 @@ Category:"""
 
 LLM_BATCH_CATEGORISE_PROMPT = """You are a clinical coding expert. Categorise each SNOMED CT concept below into exactly one of these categories:
 
-- diagnosis: A condition, symptom, disease, or injury
-- treatment: A medication, therapy, or therapeutic intervention
+- diagnosis: A condition, symptom, disease, complaint, or injury
+- treatment: A medication, therapy, lifestyle advice, diet, recommendation, or preventive intervention
 - procedure: A surgical or clinical procedure
 - referral: A referral to another service or specialist
 - investigation: A test, scan, or diagnostic investigation
-- administrative: Administrative actions, consultations, certificates, reviews
-- other: Anything that does not fit the above categories
+- administrative: Administrative actions, consultations, certificates, reviews, goal-setting, discussions, fitness-for-work assessments
+
+You MUST pick one of the six categories above for every concept. Do NOT use "other" or any value outside this list. If unsure, pick the closest match.
 
 Return a JSON object mapping each concept to its category. Example:
 {{"Knee pain": "diagnosis", "Ibuprofen": "treatment"}}
@@ -285,10 +300,13 @@ async def _categorise_single(display: str, ai_provider) -> str:
     try:
         response = await ai_provider.chat_simple(prompt)
         category = response.strip().lower()
-        return category if category in CATEGORIES else "other"
+        if category in CATEGORIES:
+            return category
+        logger.warning("LLM returned invalid category %r for %r, defaulting to administrative", category, display)
+        return "administrative"
     except Exception as e:
-        logger.error("LLM categorisation failed for %r: %s", display, e)
-        return "other"
+        logger.error("LLM categorisation failed for %r: %s, defaulting to administrative", display, e)
+        return "administrative"
 
 
 async def categorise_by_llm(
@@ -334,7 +352,7 @@ async def categorise_by_llm(
                     results[display] = category
                     matched += 1
                 else:
-                    results[display] = "other"
+                    results[display] = "administrative"
 
             if matched < len(batch) * 0.8:
                 logger.warning(
@@ -342,9 +360,7 @@ async def categorise_by_llm(
                     matched, len(batch),
                 )
                 for display in batch:
-                    if results.get(display) == "other" and display.lower() in parsed_lower:
-                        continue  # Genuinely 'other'
-                    if results.get(display) == "other":
+                    if results.get(display) == "administrative" and display.lower() not in parsed_lower:
                         results[display] = await _categorise_single(display, ai_provider)
 
         except (json_mod.JSONDecodeError, Exception) as e:
@@ -396,10 +412,10 @@ async def categorise_concepts(
         mapping.update(llm_results)
     elif unmatched:
         logger.warning(
-            "No AI provider available — %d concepts defaulting to 'other'",
+            "No AI provider available — %d concepts defaulting to 'administrative'",
             len(unmatched),
         )
         for display in unmatched:
-            mapping[display] = "other"
+            mapping[display] = "administrative"
 
     return mapping

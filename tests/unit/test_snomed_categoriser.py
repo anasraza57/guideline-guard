@@ -84,7 +84,7 @@ class TestCategoriseConcepts:
         assert result["Blood test requested"] == "investigation"
 
     @pytest.mark.asyncio
-    async def test_unmatched_defaults_to_other_without_llm(self):
+    async def test_unmatched_defaults_to_administrative_without_llm(self):
         concepts = ["Something very unusual"]
         result = await categorise_concepts(concepts, ai_provider=None)
-        assert result["Something very unusual"] == "other"
+        assert result["Something very unusual"] == "administrative"

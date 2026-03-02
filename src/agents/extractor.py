@@ -132,7 +132,7 @@ class ExtractorAgent:
 
     def get_category(self, concept_display: str) -> str:
         """Look up a concept's category from the cache."""
-        return self._category_cache.get(concept_display, "other")
+        return self._category_cache.get(concept_display, "administrative")
 
     def extract(
         self,

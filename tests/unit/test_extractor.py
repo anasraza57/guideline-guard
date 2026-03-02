@@ -128,7 +128,7 @@ class TestExtractorAgent:
             },
         ]
         result = agent.extract("pat-003", entries)
-        assert result.episodes[0].entries[0].category == "other"
+        assert result.episodes[0].entries[0].category == "administrative"
 
     def test_episode_properties(self, agent, sample_entries):
         result = agent.extract("pat-001", sample_entries)
