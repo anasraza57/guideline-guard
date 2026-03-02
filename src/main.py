@@ -40,6 +40,7 @@ async def lifespan(app: FastAPI):
     # -- Startup --
     from src.models.database import init_db, close_db
     from src.services.vector_store import get_vector_store
+    from src.services.embedder import get_embedder
 
     try:
         await init_db()
@@ -52,12 +53,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("FAISS index not loaded on startup: %s", e)
 
+    try:
+        embedder = get_embedder()
+        embedder.load()
+    except Exception as e:
+        logger.warning("PubMedBERT embedder not loaded on startup: %s", e)
+
     yield
 
     # -- Shutdown --
     logger.info("Shutting down %s", settings.app_name)
     await close_db()
     get_vector_store().unload()
+    get_embedder().unload()
 
 
 def create_app() -> FastAPI:

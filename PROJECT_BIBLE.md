@@ -225,7 +225,7 @@ We are **not copying** their work. We are analysing it, taking what's good, fixi
 |-------|------|-------|
 | `data/msk_valid_notes.csv` | 2.5 MB | Cleaned patient data (4,327 patients, 21,530 entries) |
 | `data/guidelines.csv.gz` | 24 MB | Compressed NICE guidelines (1,656 documents) |
-| `data/guidelines.index` | 4.9 MB | Pre-built FAISS index (768-dim PubMedBERT vectors) |
+| `data/guidelines.index` | 4.9 MB | FAISS index (768-dim PubMedBERT vectors) — rebuilt via `scripts/build_index.py` |
 
 ---
 
@@ -635,6 +635,12 @@ Reports (read path):
 - Report API: `src/api/routes/reports.py`
 - Tests: `tests/unit/test_reporting.py`
 
+**Post-Phase 7a fixes (2026-03-02):**
+- Pre-loaded PubMedBERT embedder at startup in `src/main.py` lifespan handler — the HTTP server was crashing because the ~440MB model loaded lazily during the first request. Now loads on startup alongside FAISS index.
+- Fixed `Makefile` `run` target — added `DB_HOST=localhost` so `make run` works locally without manual env override.
+- Updated `README.md` — professional getting-started guide with all 9 API endpoints, pipeline diagram, usage examples (audit + reports), correct test count (216), correct project structure.
+- Added `scripts/build_index.py` — builds the FAISS guideline index from `guidelines.csv` using PubMedBERT. Previously we relied on Cyprian's pre-built index file; now the system can rebuild it from scratch. Encodes all 1,656 guideline texts in batches, L2-normalizes, and saves as `IndexFlatL2`.
+
 **Blockers:** None.
 
 **Next session should start with:** Phase 7b — Gold-Standard Validation
@@ -654,6 +660,7 @@ Reports (read path):
 - **torch version pinned to 2.2.2:** Python 3.11 doesn't support torch 2.5.1. Will need updating if Python is upgraded.
 - **SNOMED categoriser coverage at 84%:** 192 of 1,261 concepts require LLM fallback. Coverage could be improved by adding more patterns, but diminishing returns — LLM handles the rest.
 - **faiss.normalize_L2 segfault on macOS:** `faiss.normalize_L2()` crashes when called on numpy arrays from PyTorch tensors. Worked around by using numpy normalization instead. May not affect Linux/Docker.
+- **PubMedBERT requires ~2GB RAM:** The embedding model (~440MB on disk) needs significant memory. Loaded at startup via lifespan handler so it's ready before any HTTP request arrives.
 - **Embedder tests use bert-tiny model:** Real PubMedBERT (~440MB) too large for unit tests. Tests use `prajjwal1/bert-tiny` (17MB, 128-dim) — same encoding logic, different weights. Integration tests with real model needed.
 - **Scorer tests use mock LLM:** Unit tests mock the AI provider. Integration tests with a real LLM needed to validate prompt quality and parsing against actual LLM outputs.
 - **Binary scoring only:** Current scoring is +1/-1 (adherent/non-adherent). No partial adherence score. The paper uses the same binary scheme, but nuanced scoring could improve accuracy.
@@ -666,6 +673,7 @@ Reports (read path):
 - Docker and Docker Compose
 - Python 3.11+ (for local development)
 - An OpenAI API key (or alternative LLM provider key)
+- ~2 GB RAM (for PubMedBERT model loading)
 
 ### Quick Start
 ```bash
@@ -691,8 +699,12 @@ DB_HOST=localhost alembic upgrade head
 # Import data into PostgreSQL
 DB_HOST=localhost python3 scripts/import_data.py
 
-# Start the app
-DB_HOST=localhost uvicorn src.main:app --reload
+# Build the FAISS guideline index from guidelines.csv
+python3 scripts/build_index.py
+
+# Start the app (first launch takes 30-60s to load PubMedBERT)
+make run
+# or: DB_HOST=localhost uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 
 # The API will be available at http://localhost:8000
 # API docs at http://localhost:8000/docs
@@ -712,3 +724,4 @@ See `.env.example` for all required variables with descriptions.
 - Database runs on port **5433** (not 5432) to avoid conflicts with local PostgreSQL.
 - When running commands locally (not inside Docker), always set `DB_HOST=localhost`.
 - Guidelines CSV is stored compressed (`data/guidelines.csv.gz`). The import script decompresses on the fly.
+- First startup takes 30–60 seconds — the server pre-loads PubMedBERT (~440MB) and the FAISS index before accepting requests. Watch the logs for "Embedding model loaded" and "Vector store ready".

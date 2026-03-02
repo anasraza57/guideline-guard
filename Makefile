@@ -36,7 +36,7 @@ logs-db: ## Follow database logs
 # -- Development --
 
 run: ## Run the app locally (without Docker)
-	uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+	DB_HOST=localhost uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 
 test: ## Run all tests
 	python -m pytest tests/ -v --tb=short
@@ -61,6 +61,9 @@ clean: ## Remove all containers, volumes, and cached files
 	docker compose down -v
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
+
+build-index: ## Build FAISS guideline index from guidelines.csv using PubMedBERT
+	python3 scripts/build_index.py
 
 setup-data: ## Copy reference data files into data/ directory
 	@echo "Copying data files from reference codebases..."
