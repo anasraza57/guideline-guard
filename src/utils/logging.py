@@ -54,6 +54,7 @@ def setup_logging(level_override: Optional[str] = None) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("openai._base_client").setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> logging.Logger:

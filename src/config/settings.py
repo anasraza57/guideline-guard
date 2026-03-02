@@ -85,6 +85,10 @@ class Settings(BaseSettings):
     max_queries_per_diagnosis: int = 3
     scorer_max_guideline_chars: int = 2000
 
+    # ── Timeout Settings ─────────────────────────────────────────
+    openai_request_timeout: float = 60.0       # seconds per LLM request
+    pipeline_patient_timeout: float = 300.0    # seconds per patient (5 min)
+
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"

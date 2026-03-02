@@ -31,7 +31,11 @@ class OpenAIProvider(AIProvider):
                 "OPENAI_API_KEY is not set. Add it to your .env file.",
                 provider="openai",
             )
-        self._client = AsyncOpenAI(api_key=settings.openai_api_key)
+        self._client = AsyncOpenAI(
+            api_key=settings.openai_api_key,
+            timeout=settings.openai_request_timeout,
+            max_retries=2,
+        )
         self._default_model = settings.openai_model
         self._default_embedding_model = settings.openai_embedding_model
         self._default_max_tokens = settings.openai_max_tokens

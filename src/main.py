@@ -47,6 +47,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Database not available on startup: %s", e)
 
+    # Recover any batch jobs left stuck by a previous crash
+    try:
+        await _recover_stale_jobs(logger)
+    except Exception as e:
+        logger.warning("Stale job recovery skipped: %s", e)
+
     try:
         vs = get_vector_store()
         vs.load()
@@ -66,6 +72,42 @@ async def lifespan(app: FastAPI):
     await close_db()
     get_vector_store().unload()
     get_embedder().unload()
+
+
+async def _recover_stale_jobs(logger) -> None:
+    """
+    Mark any jobs left as 'pending' or 'running' from a previous crash as 'failed'.
+
+    If the server dies mid-batch, jobs get stuck forever. This runs once on
+    startup to clean them up so they don't confuse polling clients.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select, or_
+    from src.models.audit import AuditJob
+    from src.models.database import get_session_factory
+
+    factory = get_session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            select(AuditJob).where(
+                or_(AuditJob.status == "pending", AuditJob.status == "running")
+            )
+        )
+        stale_jobs = result.scalars().all()
+
+        if not stale_jobs:
+            return
+
+        for job in stale_jobs:
+            job.status = "failed"
+            job.error_message = "Server restarted before job could complete"
+            job.completed_at = datetime.now(timezone.utc)
+
+        await session.commit()
+        logger.info(
+            "Recovered %d stale batch job(s) from previous crash", len(stale_jobs),
+        )
 
 
 def create_app() -> FastAPI:

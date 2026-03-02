@@ -245,7 +245,7 @@ def categorise_by_rules(concept_display: str) -> str | None:
     return None
 
 
-LLM_CATEGORISE_PROMPT = """You are a clinical coding expert. Categorise the following SNOMED CT clinical concept into exactly one of these categories:
+LLM_SINGLE_CATEGORISE_PROMPT = """You are a clinical coding expert. Categorise the following SNOMED CT clinical concept into exactly one of these categories:
 
 - diagnosis: A condition, symptom, disease, or injury (e.g., "Low back pain", "Fracture of femur")
 - treatment: A medication, therapy, or therapeutic intervention (e.g., "Ibuprofen", "Physiotherapy")
@@ -260,34 +260,109 @@ Respond with ONLY the category name, nothing else.
 Concept: "{concept_display}"
 Category:"""
 
+LLM_BATCH_CATEGORISE_PROMPT = """You are a clinical coding expert. Categorise each SNOMED CT concept below into exactly one of these categories:
+
+- diagnosis: A condition, symptom, disease, or injury
+- treatment: A medication, therapy, or therapeutic intervention
+- procedure: A surgical or clinical procedure
+- referral: A referral to another service or specialist
+- investigation: A test, scan, or diagnostic investigation
+- administrative: Administrative actions, consultations, certificates, reviews
+- other: Anything that does not fit the above categories
+
+Return a JSON object mapping each concept to its category. Example:
+{{"Knee pain": "diagnosis", "Ibuprofen": "treatment"}}
+
+Concepts to categorise:
+{concepts_list}
+
+JSON:"""
+
+
+async def _categorise_single(display: str, ai_provider) -> str:
+    """Categorise a single concept via LLM (fallback for failed batches)."""
+    prompt = LLM_SINGLE_CATEGORISE_PROMPT.format(concept_display=display)
+    try:
+        response = await ai_provider.chat_simple(prompt)
+        category = response.strip().lower()
+        return category if category in CATEGORIES else "other"
+    except Exception as e:
+        logger.error("LLM categorisation failed for %r: %s", display, e)
+        return "other"
+
 
 async def categorise_by_llm(
     concept_displays: list[str],
     ai_provider,
 ) -> dict[str, str]:
     """
-    Categorise concepts using the LLM. Processes one at a time
-    to keep responses clean and parseable.
+    Categorise concepts using the LLM in batches of 50.
 
-    Returns a dict mapping concept_display → category.
+    Uses JSON response format so each concept is explicitly mapped to its
+    category (no line-alignment risk). Falls back to individual calls
+    if a batch fails to parse.
     """
+    import gc
+    import json as json_mod
+
+    BATCH_SIZE = 50
     results = {}
-    for display in concept_displays:
-        prompt = LLM_CATEGORISE_PROMPT.format(concept_display=display)
+
+    for batch_start in range(0, len(concept_displays), BATCH_SIZE):
+        batch = concept_displays[batch_start:batch_start + BATCH_SIZE]
+
+        concepts_list = "\n".join(f"- {display}" for display in batch)
+        prompt = LLM_BATCH_CATEGORISE_PROMPT.format(concepts_list=concepts_list)
+
         try:
-            response = await ai_provider.chat_simple(prompt)
-            category = response.strip().lower()
-            if category in CATEGORIES:
-                results[display] = category
-            else:
+            response = await ai_provider.chat_simple(prompt, temperature=0.0)
+            # Extract JSON from response (handle markdown code blocks)
+            json_text = response.strip()
+            if json_text.startswith("```"):
+                json_text = re.sub(r"^```(?:json)?\s*", "", json_text)
+                json_text = re.sub(r"\s*```$", "", json_text)
+
+            parsed = json_mod.loads(json_text)
+
+            # Match parsed results back to original concept names
+            # (case-insensitive lookup for robustness)
+            parsed_lower = {k.lower(): v.lower() for k, v in parsed.items()}
+            matched = 0
+            for display in batch:
+                category = parsed_lower.get(display.lower(), "")
+                if category in CATEGORIES:
+                    results[display] = category
+                    matched += 1
+                else:
+                    results[display] = "other"
+
+            if matched < len(batch) * 0.8:
                 logger.warning(
-                    "LLM returned invalid category %r for %r, defaulting to 'other'",
-                    category, display,
+                    "Batch matched only %d/%d concepts, retrying misses individually",
+                    matched, len(batch),
                 )
-                results[display] = "other"
-        except Exception as e:
-            logger.error("LLM categorisation failed for %r: %s", display, e)
-            results[display] = "other"
+                for display in batch:
+                    if results.get(display) == "other" and display.lower() in parsed_lower:
+                        continue  # Genuinely 'other'
+                    if results.get(display) == "other":
+                        results[display] = await _categorise_single(display, ai_provider)
+
+        except (json_mod.JSONDecodeError, Exception) as e:
+            logger.warning(
+                "Batch LLM categorisation failed (batch %d-%d): %s — retrying individually",
+                batch_start, batch_start + len(batch), e,
+            )
+            for display in batch:
+                if display not in results:
+                    results[display] = await _categorise_single(display, ai_provider)
+
+        gc.collect()
+        logger.info(
+            "LLM categorised %d/%d concepts",
+            min(batch_start + BATCH_SIZE, len(concept_displays)),
+            len(concept_displays),
+        )
+
     return results
 
 

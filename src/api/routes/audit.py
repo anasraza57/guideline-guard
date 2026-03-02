@@ -5,6 +5,8 @@ Endpoints for running the audit pipeline (single patient or batch)
 and retrieving results.
 """
 
+import asyncio
+import gc
 import json
 import logging
 from datetime import datetime, timezone
@@ -14,6 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.config.settings import get_settings
 from src.models.audit import AuditJob, AuditResult
 from src.models.database import get_session, get_session_factory
 from src.models.patient import Patient
@@ -260,79 +263,160 @@ async def start_batch_audit(
 
 
 async def _run_batch_background(job_id: int, pat_ids: list[str]) -> None:
-    """Background task that runs the batch pipeline with its own DB session."""
-    factory = get_session_factory()
+    """
+    Background task that processes patients with per-patient session isolation.
 
+    Each patient gets its own short-lived DB session so the SQLAlchemy
+    identity map is cleared between patients, preventing memory growth.
+    Per-patient timeouts ensure a single slow LLM call can never stall
+    the whole batch.
+    """
+    factory = get_session_factory()
+    settings = get_settings()
+    patient_timeout = settings.pipeline_patient_timeout
+
+    # ── Mark job as running ───────────────────────────────────────
     async with factory() as session:
+        result = await session.execute(
+            select(AuditJob).where(AuditJob.id == job_id)
+        )
+        job = result.scalar_one()
+        job.status = "running"
+        job.started_at = datetime.now(timezone.utc)
+        await session.commit()
+
+    logger.info("Batch job %d started (%d patients)", job_id, len(pat_ids))
+
+    pipeline = _get_pipeline()
+
+    if not pipeline._retriever._embedder.is_loaded:
+        pipeline._retriever._embedder.load()
+
+    # Pre-load categories in a short-lived session
+    async with factory() as session:
+        await pipeline.load_categories_from_db(session)
+
+    # ── Process patients (one session per patient) ────────────────
+    failed_count = 0
+    processed = 0
+
+    for i, pat_id in enumerate(pat_ids, 1):
         try:
-            # Update job status — commit immediately so polling sees "running"
+            # Fresh session per patient — identity map is discarded on exit,
+            # keeping memory usage constant regardless of batch size.
+            async with factory() as session:
+                pipeline_result = await asyncio.wait_for(
+                    pipeline.run_single(session, pat_id, job_id=job_id),
+                    timeout=patient_timeout,
+                )
+                if not pipeline_result.success:
+                    failed_count += 1
+
+                # Update progress atomically with the patient result
+                job_row = await session.execute(
+                    select(AuditJob).where(AuditJob.id == job_id)
+                )
+                job_obj = job_row.scalar_one()
+                job_obj.processed_patients = i
+                job_obj.failed_patients = failed_count
+                await session.commit()
+
+        except asyncio.TimeoutError:
+            failed_count += 1
+            logger.error(
+                "Batch job %d: patient %s timed out after %ds",
+                job_id, pat_id, int(patient_timeout),
+            )
+            await _save_patient_error_and_progress(
+                factory, pat_id, job_id,
+                f"Pipeline timed out after {int(patient_timeout)}s",
+                i, failed_count,
+            )
+
+        except Exception as e:
+            failed_count += 1
+            logger.error(
+                "Batch job %d: patient %s failed: %s", job_id, pat_id, e,
+            )
+            await _save_patient_error_and_progress(
+                factory, pat_id, job_id,
+                str(e)[:500], i, failed_count,
+            )
+
+        processed = i
+
+        if i % 10 == 0:
+            logger.info(
+                "Batch job %d: %d/%d patients (%d failed)",
+                job_id, i, len(pat_ids), failed_count,
+            )
+            gc.collect()
+
+    # ── Finalise job ──────────────────────────────────────────────
+    try:
+        async with factory() as session:
             result = await session.execute(
                 select(AuditJob).where(AuditJob.id == job_id)
             )
             job = result.scalar_one()
-            job.status = "running"
-            job.started_at = datetime.now(timezone.utc)
-            await session.commit()
-            logger.info("Batch job %d started (%d patients)", job_id, len(pat_ids))
-
-            pipeline = _get_pipeline()
-
-            # Ensure embedder is loaded
-            if not pipeline._retriever._embedder.is_loaded:
-                pipeline._retriever._embedder.load()
-
-            # Load categories
-            await pipeline.load_categories_from_db(session)
-
-            # Process each patient
-            for i, pat_id in enumerate(pat_ids, 1):
-                try:
-                    pipeline_result = await pipeline.run_single(
-                        session, pat_id, job_id=job_id
-                    )
-                    if not pipeline_result.success:
-                        job.failed_patients += 1
-                except Exception as e:
-                    logger.error("Batch job %d: patient %s failed: %s",
-                                 job_id, pat_id, e)
-                    job.failed_patients += 1
-
-                job.processed_patients = i
-
-                # Commit progress every patient so polling sees updates
-                await session.commit()
-
-                if i % 10 == 0:
-                    logger.info(
-                        "Batch job %d: %d/%d patients (%d failed)",
-                        job_id, i, len(pat_ids), job.failed_patients,
-                    )
-
-            # Finalise
             job.status = "completed"
+            job.processed_patients = processed
+            job.failed_patients = failed_count
             job.completed_at = datetime.now(timezone.utc)
             await session.commit()
+    except Exception as e:
+        logger.error("Batch job %d: failed to finalize: %s", job_id, e)
 
-            logger.info(
-                "Batch job %d finished: %d/%d patients, %d failed",
-                job_id, job.processed_patients, job.total_patients, job.failed_patients,
+    logger.info(
+        "Batch job %d finished: %d/%d patients, %d failed",
+        job_id, processed, len(pat_ids), failed_count,
+    )
+    gc.collect()
+
+
+async def _save_patient_error_and_progress(
+    factory,
+    pat_id: str,
+    job_id: int,
+    error_msg: str,
+    processed: int,
+    failed_count: int,
+) -> None:
+    """Store a failed AuditResult and update job progress in a clean session."""
+    try:
+        async with factory() as session:
+            # Find patient DB id to store the error result
+            result = await session.execute(
+                select(Patient.id).where(Patient.pat_id == pat_id)
             )
-
-        except Exception as e:
-            logger.error("Batch job %d crashed: %s", job_id, e)
-            try:
-                # Re-fetch job in case session state is stale after error
-                result = await session.execute(
-                    select(AuditJob).where(AuditJob.id == job_id)
+            row = result.first()
+            if row:
+                audit_result = AuditResult(
+                    patient_id=row[0],
+                    job_id=job_id,
+                    overall_score=None,
+                    diagnoses_found=0,
+                    guidelines_followed=0,
+                    guidelines_not_followed=0,
+                    details_json=None,
+                    status="failed",
+                    error_message=error_msg,
                 )
-                job = result.scalar_one()
-                job.status = "failed"
-                job.error_message = str(e)[:500]
-                job.completed_at = datetime.now(timezone.utc)
-                await session.commit()
-            except Exception as inner_e:
-                logger.error("Batch job %d: failed to save error state: %s",
-                             job_id, inner_e)
+                session.add(audit_result)
+
+            # Update job progress
+            job_result = await session.execute(
+                select(AuditJob).where(AuditJob.id == job_id)
+            )
+            job = job_result.scalar_one()
+            job.processed_patients = processed
+            job.failed_patients = failed_count
+            await session.commit()
+    except Exception as e:
+        logger.warning(
+            "Batch job %d: failed to save error for patient %s: %s",
+            job_id, pat_id, e,
+        )
 
 
 @router.get(
