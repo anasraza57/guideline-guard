@@ -460,26 +460,68 @@ Key variables (see `.env.example` for the full list):
 
 ## Evaluation Results
 
-Cross-model evaluation on the same patients using deterministic `pat_id` ordering.
+The system was evaluated on 1,000 randomly sampled MSK consultation records (1,491 clinical entries) using two LLMs in the auditor role: GPT-4.1-mini (cloud-hosted via OpenAI) and Mistral-Small (locally hosted via Ollama). Both processed identical prompts, retrieval parameters, and scoring rubrics, with a 0% pipeline error rate.
 
-### Scorer Evaluation — LLM-as-Judge (100 patients, 156 diagnoses, scale 1-5)
+### Score Distribution (1,000 records, 1,491 entries)
 
-| Metric | mistral-small + Ollama Judge | mistral-small + OpenAI Judge | gpt-4.1-mini + Ollama Judge | gpt-4.1-mini + OpenAI Judge |
-|---|---|---|---|---|
-| Reasoning Quality | 4.58 | 4.37 | 4.75 | 4.77 |
-| Citation Accuracy | 3.81 | 3.22 | 4.56 | 4.46 |
-| Score Calibration | 4.56 | 4.51 | 4.73 | 4.79 |
-
-### Full Agent Evaluation (50 patients, 88 diagnoses)
-
-| Metric | mistral-small | gpt-4.1-mini |
+| Score Category | GPT-4.1-mini | Mistral-Small |
 |---|---|---|
-| Extractor match rate | 1.00 | 1.00 |
-| Query relevance / coverage | 4.30 / 3.47 | 4.55 / 3.63 |
-| Retriever precision@k / nDCG / MRR | 0.38 / 0.65 / 0.60 | 0.57 / 0.82 / 0.79 |
-| Scorer reasoning / citation / calibration | 4.61 / 3.86 / 4.60 | 4.78 / 4.32 / 4.77 |
+| Compliant (+2) | 2 (0.1%) | 0 (0.0%) |
+| Partially Compliant (+1) | 283 (19.0%) | 243 (16.3%) |
+| Not Relevant (0) | 343 (23.0%) | 269 (18.0%) |
+| Non-Compliant (-1) | 862 (57.8%) | 973 (65.3%) |
+| Risky (-2) | 1 (0.1%) | 6 (0.4%) |
+| **Adherence Rate** | **24.8%** | **19.9%** |
+| **Mean Confidence** | **0.87** | **0.89** |
 
-Detailed per-patient evaluation outputs are not publicly released. See **[Data Access](#data-access)** for the request procedure.
+Adherence Rate = (Compliant + Partial) / (total − Not Relevant). The high proportion of Non-Compliant scores reflects the sparsity of coded management data (verbal advice, OTC recommendations, and prescriptions logged in separate systems are not captured in SNOMED-coded entries) rather than unsafe care.
+
+### Cross-Model Agreement (5-class)
+
+| Metric | Value |
+|---|---|
+| Exact match | 77% |
+| Cohen's κ | 0.58 (moderate) |
+| Pearson r | 0.75 |
+
+Most disagreements occur between adjacent score levels (−1 vs 0 and −1 vs +1), consistent with the inherent ambiguity of sparse coded records.
+
+### Per-Agent Evaluation (50 records, 88 entries; LLM-as-Judge)
+
+Quality ratings on a 1-5 scale; IR metrics on a 0-1 scale.
+
+| Metric | GPT-4.1-mini | Mistral-Small |
+|---|---|---|
+| **Consultation Insight Agent** | | |
+| Rule match rate | 1.00 | 1.00 |
+| Per-category F1 | 1.00 | 1.00 |
+| **Audit Query Generator** | | |
+| Relevance | 4.55 | 4.30 |
+| Coverage | 3.63 | 3.47 |
+| **Guideline Evidence Finder** | | |
+| Precision@k | 0.57 | 0.38 |
+| Recall@k | 0.95 | 0.85 |
+| nDCG@k | 0.82 | 0.65 |
+| MRR | 0.79 | 0.60 |
+| **Compliance Auditor Agent** | | |
+| Reasoning Quality | 4.78 | 4.61 |
+| Citation Accuracy | 4.32 | 3.86 |
+| Score Calibration | 4.77 | 4.60 |
+
+### Cross-Judge Validation (100 records, 156 diagnoses; LLM-as-Judge, scale 1-5)
+
+Each model's scoring output was evaluated by both models acting as judges, to reduce self-assessment bias.
+
+| Scorer | Judge | Reasoning | Citation | Calibration |
+|---|---|---|---|---|
+| GPT-4.1-mini | GPT-4.1-mini | 4.77 | 4.46 | 4.79 |
+| GPT-4.1-mini | Mistral-Small | 4.75 | 4.56 | 4.73 |
+| Mistral-Small | GPT-4.1-mini | 4.37 | 3.22 | 4.51 |
+| Mistral-Small | Mistral-Small | 4.58 | 3.81 | 4.56 |
+
+Both judges consistently ranked GPT-4.1-mini higher across all three quality dimensions, with the largest gap in citation accuracy.
+
+Detailed per-patient evaluation outputs and audit reports are not publicly released. See **[Data Access](#data-access)** for the request procedure.
 
 ---
 
