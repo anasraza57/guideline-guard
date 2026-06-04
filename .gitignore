@@ -47,6 +47,7 @@ data/*.jsonl
 data/*.txt
 data/*.xlsx
 data/guidelines.index
+data/eval_results/
 
 # Logs
 logs/
