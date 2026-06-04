@@ -40,13 +40,13 @@ htmlcov/
 # Docker
 docker-compose.override.yml
 
-# Data files — track compressed and essential files, ignore raw large files
+# Data files — restricted/raw data is not committed (request from authors)
 data/*.csv
+data/*.csv.gz
 data/*.jsonl
 data/*.txt
 data/*.xlsx
-!data/guidelines.csv.gz
-!data/guidelines.index
+data/guidelines.index
 
 # Logs
 logs/

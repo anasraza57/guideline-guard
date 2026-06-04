@@ -18,6 +18,32 @@ ClinAuditAI runs a 4-agent RAG pipeline on each patient's clinical record:
 
 ---
 
+## Data Access
+
+This repository contains the **source code only**. The datasets the pipeline depends on are **not included in the public release** because they are subject to data-sharing restrictions:
+
+| File | Description |
+|------|-------------|
+| `data/msk_valid_notes.csv` | Anonymised musculoskeletal patient records (clinical notes, SNOMED-coded entries) |
+| `data/guidelines.csv.gz` | NICE clinical guideline corpus used by the retriever |
+| `data/guidelines.index` | Pre-built FAISS index over the guideline corpus (can be regenerated from `guidelines.csv.gz`) |
+
+Researchers with a valid academic or research purpose can request access by contacting the author at **anas@merch.com**. Requests are reviewed on a case-by-case basis and are subject to any applicable data-sharing restrictions, ethical approvals, and institutional agreements.
+
+Once access has been granted, place the files in the project as follows:
+
+```
+clinaudit-ai/
+└── data/
+    ├── msk_valid_notes.csv   # received from authors
+    ├── guidelines.csv.gz     # received from authors
+    └── guidelines.index      # received from authors, OR rebuild via `python3 scripts/build_index.py`
+```
+
+After the files are in place, follow the **Quick Start** instructions below — the import (`scripts/import_data.py`) and index build (`scripts/build_index.py`) will pick them up automatically.
+
+---
+
 ## Quick Start
 
 ### Prerequisites
