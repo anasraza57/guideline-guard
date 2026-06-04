@@ -28,7 +28,7 @@ This repository contains the **source code only**. The datasets the pipeline dep
 | `data/guidelines.csv.gz` | NICE clinical guideline corpus used by the retriever |
 | `data/guidelines.index` | Pre-built FAISS index over the guideline corpus (can be regenerated from `guidelines.csv.gz`) |
 
-Researchers with a valid academic or research purpose can request access by contacting the author at **anas@merch.com**. Requests are reviewed on a case-by-case basis and are subject to any applicable data-sharing restrictions, ethical approvals, and institutional agreements.
+Researchers with a valid academic or research purpose can request access by contacting the author at **anassheikh57@gmail.com**. Requests are reviewed on a case-by-case basis and are subject to any applicable data-sharing restrictions, ethical approvals, and institutional agreements.
 
 Once access has been granted, place the files in the project as follows:
 
