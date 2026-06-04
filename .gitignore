@@ -45,7 +45,6 @@ data/*.csv
 data/*.jsonl
 data/*.txt
 data/*.xlsx
-!data/msk_valid_notes.csv
 !data/guidelines.csv.gz
 !data/guidelines.index
 
