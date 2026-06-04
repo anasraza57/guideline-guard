@@ -520,13 +520,11 @@ clinaudit-ai/
 ├── exports/                   # Generated reports and charts
 ├── docker-compose.yml         # PostgreSQL + app services
 ├── Dockerfile                 # Multi-stage app build
-├── Makefile                   # Common commands (make help)
-└── PROJECT_BIBLE.md           # Complete project state, decisions, and roadmap
+└── Makefile                   # Common commands (make help)
 ```
 
 ---
 
 ## Documentation
 
-- **[PROJECT_BIBLE.md](PROJECT_BIBLE.md)** — Single source of truth: architecture, decisions, roadmap, progress
 - **[docs/learning/](docs/learning/)** — Educational docs explaining every component in plain English
